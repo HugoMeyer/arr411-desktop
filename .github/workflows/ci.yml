@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test and package
+    runs-on: windows-latest
+    steps:
+      # build.ps1 looks for arr411-android and arr411-chrome next to this repository.
+      - uses: actions/checkout@v4
+        with:
+          path: arr411-desktop
+      - uses: actions/checkout@v4
+        with:
+          repository: HugoMeyer/arr411-android
+          path: arr411-android
+      - uses: actions/checkout@v4
+        with:
+          repository: HugoMeyer/arr411-chrome
+          path: arr411-chrome
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Check that the tag matches the version of the build
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: arr411-desktop
+        shell: pwsh
+        run: |
+          $version = (dotnet msbuild src/Arr411.Desktop/Arr411.Desktop.csproj -getProperty:Version -nologo | Out-String).Trim()
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "The tag $env:GITHUB_REF_NAME does not match the version $version of Directory.Build.props"
+          }
+
+      # The end-to-end tests drive the real window with the keyboard and the mouse: they need an interactive session, so they run on a PC (build.ps1 -Task e2e), not here.
+      - name: Build, run the unit tests, publish and zip
+        working-directory: arr411-desktop
+        shell: pwsh
+        run: ./build.ps1 -Task zip
+
+      - name: Checksum
+        working-directory: arr411-desktop/dist
+        shell: pwsh
+        run: |
+          Get-ChildItem *.zip | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content SHA256SUMS.txt -Encoding ascii
+          Get-Content SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Arr411-Desktop-win-x64
+          path: |
+            arr411-desktop/dist/*.zip
+            arr411-desktop/dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Arr411-Desktop-win-x64
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Arr411 Desktop ${GITHUB_REF_NAME#v}" --generate-notes

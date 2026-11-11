@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Arr411</AssemblyName>
+    <RootNamespace>Arr411.Desktop</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <!-- Do not copy the XML documentation of referenced packages next to the exe. -->
+    <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+  </ItemGroup>
+
+  <!-- Windows Forms has a Shortcut enum too. -->
+  <ItemGroup>
+    <Using Include="Arr411.Core.Shell.Shortcut" Alias="Shortcut" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Arr411.Core\Arr411.Core.csproj" />
+  </ItemGroup>
+
+  <!-- The web app, the engine and the page scripts come as is from arr411-android and arr411-chrome. -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(AndroidRepo)app\**\*" LogicalName="app/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(AndroidRepo)assets-extra\engine.html" LogicalName="engine/engine.html" />
+    <EmbeddedResource Include="$(AndroidRepo)assets-extra\shim-engine.js" LogicalName="engine/shim-engine.js" />
+    <EmbeddedResource Include="$(ExtensionRepo)background.js" LogicalName="engine/background.js" />
+    <EmbeddedResource Include="$(AndroidRepo)assets-extra\shim-page.js" LogicalName="page/shim-page.js" />
+    <EmbeddedResource Include="$(ExtensionRepo)page-hook.js" LogicalName="page/page-hook.js" />
+    <EmbeddedResource Include="$(ExtensionRepo)content.js" LogicalName="page/content.js" />
+    <EmbeddedResource Include="Scripts\*.js" LogicalName="scripts/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Assets\app.ico" LogicalName="app.ico" />
+  </ItemGroup>
+
+  <Target Name="CheckAssetSources" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(AndroidRepo)app\index.html') Or !Exists('$(AndroidRepo)assets-extra\shim-engine.js')"
+           Text="arr411-android not found in '$(AndroidRepo)'. Clone https://github.com/HugoMeyer/arr411-android next to this repository, or set ARR411_ANDROID." />
+    <Error Condition="!Exists('$(ExtensionRepo)background.js') Or !Exists('$(ExtensionRepo)content.js') Or !Exists('$(ExtensionRepo)page-hook.js')"
+           Text="arr411-chrome not found in '$(ExtensionRepo)'. Clone https://github.com/HugoMeyer/arr411-chrome next to this repository, or set ARR411_EXTENSION." />
+  </Target>
+
+</Project>
