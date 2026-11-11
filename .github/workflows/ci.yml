@@ -47,26 +47,31 @@ jobs:
           }
 
       # The end-to-end tests drive the real window with the keyboard and the mouse: they need an interactive session, so they run on a PC (build.ps1 -Task e2e), not here.
-      - name: Build, run the unit tests, publish and zip
+      - name: Build and run the unit tests
         working-directory: arr411-desktop
         shell: pwsh
-        run: ./build.ps1 -Task zip
+        run: ./build.ps1 -Task test
 
-      - name: Checksum
-        working-directory: arr411-desktop/dist
+      - name: Publish Arr411.exe
+        working-directory: arr411-desktop
+        shell: pwsh
+        run: ./build.ps1 -Task publish
+
+      # The release ships Arr411.exe itself, not a zip: next to it, its checksum and the licence files the zip used to carry.
+      - name: Collect the release files
+        working-directory: arr411-desktop
         shell: pwsh
         run: |
-          Get-ChildItem *.zip | ForEach-Object {
-            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
-          } | Set-Content SHA256SUMS.txt -Encoding ascii
-          Get-Content SHA256SUMS.txt
+          New-Item -ItemType Directory dist/release | Out-Null
+          Copy-Item dist/publish/Arr411.exe, LICENSE, THIRD_PARTY_NOTICES.md dist/release
+          $hash = (Get-FileHash dist/release/Arr411.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$PWD/dist/release/SHA256SUMS.txt", "$hash  Arr411.exe`n")
+          Get-Content dist/release/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: Arr411-Desktop-win-x64
-          path: |
-            arr411-desktop/dist/*.zip
-            arr411-desktop/dist/SHA256SUMS.txt
+          path: arr411-desktop/dist/release/*
           if-no-files-found: error
 
   release:
@@ -84,4 +89,13 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Arr411 Desktop ${GITHUB_REF_NAME#v}" --generate-notes
+        run: |
+          ls -l dist
+          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          Télécharge **Arr411.exe** et lance-le : rien à installer.
+
+          Le programme n'est pas signé : si SmartScreen affiche « Windows a protégé votre PC », clique sur **Informations complémentaires** puis **Exécuter quand même**.
+
+          L'empreinte SHA-256 est dans `SHA256SUMS.txt`, les licences dans `LICENSE` et `THIRD_PARTY_NOTICES.md`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Arr411 Desktop ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes

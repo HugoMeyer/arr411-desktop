@@ -14,13 +14,13 @@ C'est le même code que l'[application Android](https://github.com/HugoMeyer/arr
 
 Prérequis : Windows 10 ou 11 (64 bits) et le **WebView2 Runtime** de Microsoft, déjà présent sur Windows 11 et sur la plupart des Windows 10 à jour. S'il manque, Arr411 le dit et propose la page de téléchargement.
 
-1. Télécharge `Arr411-Desktop-<version>-win-x64.zip` dans les [Releases](https://github.com/HugoMeyer/arr411-desktop/releases), ou construis-le toi-même ([Développement](#développement)).
-2. Clic droit sur le zip, **Propriétés**, coche **Débloquer** puis OK, et décompresse-le où tu veux.
+1. Télécharge [`Arr411.exe`](https://github.com/HugoMeyer/arr411-desktop/releases/latest/download/Arr411.exe) (dernière [release](https://github.com/HugoMeyer/arr411-desktop/releases)), ou construis-le toi-même ([Développement](#développement)).
+2. Mets-le dans un dossier à lui : Windows y retient son emplacement (liens magnet, lancement avec Windows), et Arr411 corrige ces réglages si tu le déplaces.
 3. Lance `Arr411.exe`. Le programme n'est pas signé : si SmartScreen affiche « Windows a protégé votre PC », clique sur **Informations complémentaires** puis **Exécuter quand même**.
 
 Au premier lancement, Arr411 s'ouvre sur **Réglages** : renseigne l'adresse (et le mot de passe ou la clé API) de ceux de tes services que tu utilises, les autres peuvent rester vides. Ensuite l'application s'ouvre sur l'onglet que tu as choisi dans les réglages (C411 par défaut).
 
-Pour la désinstaller : `Arr411.exe --unregister`, puis supprime le dossier du programme et `%LOCALAPPDATA%\Arr411`.
+Pour la désinstaller : `Arr411.exe --unregister`, puis supprime `Arr411.exe` et `%LOCALAPPDATA%\Arr411`.
 
 ## Utilisation
 
@@ -149,7 +149,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Task <tâche>
 | `publish` | `Arr411.exe` autonome en un seul fichier, dans `dist\publish` |
 | `zip` (défaut) | `test`, `publish`, puis `dist\Arr411-Desktop-<version>-win-x64.zip` avec son empreinte SHA-256 |
 
-Le workflow [GitHub Actions](.github/workflows/ci.yml) fait la tâche `zip` à chaque envoi et chaque pull request, et publie une release quand tu pousses un tag `vX.Y.Z` égal à la `Version` de `Directory.Build.props`. Les tests de bout en bout ne tournent pas dans ce workflow : ils ont besoin d'une session interactive.
+Le workflow [GitHub Actions](.github/workflows/ci.yml) lance les tests et publie `Arr411.exe` à chaque envoi et chaque pull request (le fichier est téléchargeable depuis l'exécution du workflow). Quand tu pousses un tag `vX.Y.Z` égal à la `Version` de `Directory.Build.props`, il crée aussi une release qui contient `Arr411.exe` lui-même (pas de zip), avec `SHA256SUMS.txt`, `LICENSE` et `THIRD_PARTY_NOTICES.md`. Les tests de bout en bout ne tournent pas dans ce workflow : ils ont besoin d'une session interactive.
 
 ```
 src\Arr411.Core\           logique sans interface : ponts, HTTP, configuration chiffrée, lancement, fichiers

@@ -1,6 +1,6 @@
 # Éléments tiers
 
-Le code de ce dépôt est publié sous licence MIT (fichier `LICENSE`). Les fichiers qui en sont tirés, `Arr411.exe` et le zip qui le contient, embarquent aussi les éléments ci-dessous, qui gardent leur propre licence.
+Le code de ce dépôt est publié sous licence MIT (fichier `LICENSE`). Les fichiers qui en sont tirés, `Arr411.exe` et le zip que fabrique `build.ps1`, embarquent aussi les éléments ci-dessous, qui gardent leur propre licence.
 
 L'application web, le moteur et les scripts de page embarqués dans `Arr411.exe` viennent tels quels de [arr411-android](https://github.com/HugoMeyer/arr411-android) et de [arr411-chrome](https://github.com/HugoMeyer/arr411-chrome), deux projets MIT du même auteur. `arr411-android` a ses propres [éléments tiers](https://github.com/HugoMeyer/arr411-android/blob/main/THIRD_PARTY_NOTICES.md) ; le seul élément tiers de ce qui est embarqué est celui de la section suivante.
 
@@ -36,7 +36,7 @@ SOFTWARE.
 
 `Arr411.exe` inclut le wrapper managé et le chargeur du [SDK WebView2](https://aka.ms/webview) (paquet NuGet `Microsoft.Web.WebView2`). Le paquet fournit sa propre liste d'éléments tiers ([page NuGet](https://www.nuget.org/packages/Microsoft.Web.WebView2)).
 
-Le runtime WebView2 (Microsoft Edge) n'est pas dans le zip : il est installé sur le PC de l'utilisateur, sous les conditions de licence de Microsoft.
+Le runtime WebView2 (Microsoft Edge) n'est pas dans `Arr411.exe` ni dans le zip : il est installé sur le PC de l'utilisateur, sous les conditions de licence de Microsoft.
 
 ```
 Copyright (C) Microsoft Corporation. All rights reserved.
