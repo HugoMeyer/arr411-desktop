@@ -56,9 +56,10 @@ if ($Task -in 'build', 'test', 'e2e') { return }
 $dist = "$root\dist"
 $pub = "$dist\publish"
 Remove-Item $pub -Recurse -Force -ErrorAction SilentlyContinue
+# The -p: arguments are quoted: unquoted, PowerShell 7 splits them in two when they go through $args, and dotnet then takes the value for a second project.
 Invoke-Dotnet publish $proj -c Release -r win-x64 --self-contained true `
-  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
-  -p:DebugType=none -p:DebugSymbols=false -o $pub --nologo
+  '-p:PublishSingleFile=true' '-p:IncludeNativeLibrariesForSelfExtract=true' '-p:EnableCompressionInSingleFile=true' `
+  '-p:DebugType=none' '-p:DebugSymbols=false' -o $pub --nologo
 Get-ChildItem "$pub\*" -Include *.pdb, *.xml | Remove-Item -Force
 $exe = "$pub\Arr411.exe"
 if (-not (Test-Path $exe)) { throw "Arr411.exe not found in $pub" }
