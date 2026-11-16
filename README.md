@@ -31,6 +31,7 @@ La barre d'onglets donne accès à **C411**, **Radarr**, **Sonarr**, **Lidarr** 
 - Clic droit sur un onglet de service : ses réglages.
 - Clic sur l'onglet C411 déjà affiché, ou clic droit dessus : recharger la page, accueil C411, copier le lien, réglages.
 - Dans une grande fenêtre, la bibliothèque de Radarr, Sonarr et Lidarr s'étale sur autant de colonnes que la place le permet (affiches d'environ 160 px, lignes de la vue en liste côte à côte) au lieu de trois colonnes géantes.
+- Dans qBittorrent, les torrents tagués `zen-farm` sont masqués par défaut : une pastille au-dessus de la liste les réaffiche, et le menu en entonnoir permet de masquer d'autres tags. La liste reste fluide avec des dizaines de milliers de torrents.
 
 | Raccourci | Action |
 | --- | --- |
@@ -44,7 +45,7 @@ Les autres raccourcis du navigateur sont désactivés (pas de zoom au clavier, p
 
 ### C411
 
-L'onglet affiche le vrai site. Tu t'y connectes toi-même, et ta session est gardée 30 jours (les cookies de session de c411.org reçoivent une date d'expiration). Dans les pages, un bouton **qBittorrent** apparaît à côté de **Télécharger** et au bout de chaque ligne des listes : choix de la catégorie, ajout en pause, ajout du film, de la série ou de l'album dans Radarr, Sonarr ou Lidarr (toujours non surveillé et sans recherche automatique : C411 reste ta seule source), avertissement si le torrent est déjà dans qBittorrent, badges d'avancement. Tout le détail est dans le [README de l'extension](https://github.com/HugoMeyer/arr411-chrome#readme).
+L'onglet affiche le vrai site. Tu t'y connectes toi-même, et ta session est gardée 30 jours (les cookies de session de c411.org reçoivent une date d'expiration). Dans les pages, un bouton **qBittorrent** apparaît à côté de **Télécharger** et au bout de chaque ligne des listes : choix de la catégorie, ajout en pause, ajout du film, de la série ou de l'album dans Radarr, Sonarr ou Lidarr (toujours non surveillé et sans recherche automatique : C411 reste ta seule source), avertissement si le torrent est déjà dans qBittorrent, badges d'avancement. Des **badges de score** (0 à 100) notent chaque version d'un torrent (langue, qualité, seeders, taille) et distinguent la meilleure : ★ meilleur choix, ⚖︎ meilleur rapport qualité/taille, ◆ meilleure qualité, ⚡︎ plus de seeders ; un clic sur le badge donne le détail. Tout le détail est dans le [README de l'extension](https://github.com/HugoMeyer/arr411-chrome#readme).
 
 ### Liens magnet et fichiers .torrent
 
