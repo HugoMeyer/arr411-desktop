@@ -2,7 +2,7 @@
 
 L'application **Windows** d'**Arr411** : qBittorrent, Radarr, Sonarr et Lidarr dans une seule fenêtre, avec **le vrai site C411** affiché par le moteur d'Edge (WebView2), aussi rapide et aussi net que dans ton navigateur.
 
-C'est le même code que l'[application Android](https://github.com/HugoMeyer/arr411-android) et l'[extension Chrome](https://github.com/HugoMeyer/arr411-chrome) : seule la partie native (fenêtre, réseau, fichiers, notifications) est réécrite, en C#. La version pour serveur, à héberger avec Docker, est [arr411-webapp](https://github.com/HugoMeyer/arr411-webapp).
+C'est le même code que l'[application Android](https://github.com/HugoMeyer/arr411-android) et l'[extension Chrome](https://github.com/HugoMeyer/arr411-chrome) : seule la partie native (fenêtre, réseau, fichiers, notifications) est réécrite, en C#.
 
 - **Le vrai C411**, pas une image diffusée : l'onglet C411 est le site lui-même, avec les boutons d'envoi vers qBittorrent, Radarr, Sonarr et Lidarr que l'extension ajoute dans la page.
 - **Le VPN reste sur ton PC** : C411 n'est joignable qu'avec un VPN, tu le lances sur le PC et l'application passe par sa connexion. Rien à configurer dans Arr411.
@@ -26,7 +26,7 @@ Pour la désinstaller : `Arr411.exe --unregister`, puis supprime `Arr411.exe` et
 
 ### Les onglets
 
-La barre d'onglets donne accès à **C411**, **Radarr**, **Sonarr**, **Lidarr** et **qBittorrent**. Son bouton **Menu** ouvre le menu de l'application (réglages, associations, zone de notification, à propos, quitter).
+La barre d'onglets donne accès à **C411**, **Radarr**, **Sonarr**, **Lidarr** et **qBittorrent**. Son bouton **Menu** ouvre le menu de l'application (réglages, associations, zone de notification, journaux et rapport de diagnostic, à propos, quitter).
 
 - Clic droit sur un onglet de service : ses réglages.
 - Clic sur l'onglet C411 déjà affiché, ou clic droit dessus : recharger la page, accueil C411, copier le lien, réglages.
@@ -88,7 +88,10 @@ Tout est dans `%LOCALAPPDATA%\Arr411` (ou le dossier désigné par la variable d
 | `ui.json` | Taille et position de la fenêtre, dernier onglet (rien de sensible) |
 | `WebView2\` | Profil du navigateur : cookies et stockage de l'application et de C411 |
 | `cache\covers\` | Pochettes et affiches déjà vues |
-| `logs\arr411.log` | Journal (1 Mo au plus, ni mot de passe ni clé API) |
+| `logs\arr411.log` | Journal (2 Mo au plus, plus l'ancien `arr411.log.1`) : démarrage, mémoire toutes les 15 minutes, avertissements, erreurs. Ni mot de passe ni clé API |
+| `logs\crash.log` | Le récit complet de chaque exception que personne n'a rattrapée, avec l'état de la mémoire à cet instant |
+| `logs\running.txt` | Existe tant qu'Arr411 tourne et disparaît quand il s'arrête normalement : le retrouver au lancement suivant veut dire qu'il a été arrêté de l'extérieur (processus tué, coupure de courant, plantage) ; il dit quand il était encore vivant et la mémoire qu'il occupait alors |
+| `logs\diagnostic.txt` | Le dernier rapport de diagnostic demandé depuis le menu (voir [Diagnostic](#diagnostic)) |
 
 Les fichiers que tu télécharges depuis la page C411 (fichiers `.torrent`, images, `.nfo`...) sont enregistrés par le navigateur intégré dans ton dossier Téléchargements, ou dans celui de la variable `ARR411_DOWNLOADS`, avec la marque « téléchargé depuis Internet » de Windows.
 
@@ -122,8 +125,19 @@ La page C411 est tenue pour **non fiable** : c'est un site extérieur, qui peut 
 - **« Arr411 est déjà lancé mais ne répond pas »** : termine `Arr411.exe` dans le Gestionnaire des tâches, puis relance-le.
 - **La page C411 ne se charge pas** : vérifie que ton VPN est actif, et que c411.org s'ouvre dans ton navigateur avec ce même VPN.
 - **Tes services sont injoignables quand le VPN est actif** : beaucoup de VPN coupent le réseau local. Autorise-le dans le client VPN, ou utilise pour tes services l'adresse accessible depuis Internet.
+- **Arr411 se ferme ou se fige** : voir [Diagnostic](#diagnostic).
 - **Journaux** : menu **Ouvrir le dossier des journaux**.
 - **Repartir de zéro** : quitte Arr411 et supprime `%LOCALAPPDATA%\Arr411` (réglages, session C411 et cache sont effacés).
+
+## Diagnostic
+
+Quand Arr411 plante, se fige ou grossit sans raison, il garde de quoi comprendre pourquoi, sans rien envoyer nulle part :
+
+- **Le menu → Copier le rapport de diagnostic** met dans le presse-papiers un seul texte à coller dans un message : versions (Arr411, Windows, .NET, WebView2), mémoire d'Arr411 et des processus du navigateur intégré, façon dont s'est terminé le lancement précédent, dernier plantage, événements Windows concernant Arr411, et les 80 dernières lignes du journal. Il dit seulement si un service est configuré, jamais son adresse ni ses identifiants ; les mots de passe, clés, cookies, adresses avec identifiants et ton nom d'utilisateur Windows en sont retirés. Si le presse-papiers est indisponible, le même texte est dans `logs\diagnostic.txt`.
+- **Le journal** (`logs\arr411.log`) note au démarrage le système et les versions, puis la mémoire toutes les 15 minutes et à chaque seuil franchi (1, 2 et 4 Go) en précisant ce que tiennent les processus du navigateur. Il signale aussi une fenêtre qui ne répond plus depuis 10 secondes (`The window has not answered for …`), un processus du navigateur qui s'arrête (type, raison, code de sortie) et un lancement précédent qui ne s'est pas terminé normalement.
+- **`logs\crash.log`** garde l'exception complète, avec ses exceptions internes, de tout ce qui est remonté jusqu'au bout sans être rattrapé : thread de la fenêtre, autre thread, tâche que personne n'attendait.
+
+Si le problème se reproduit, envoie le rapport (ou `logs\diagnostic.txt`, et `logs\crash.log` s'il existe) pour qu'on puisse l'analyser.
 
 ## Développement
 

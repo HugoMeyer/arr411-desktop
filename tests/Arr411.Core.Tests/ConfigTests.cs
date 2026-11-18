@@ -129,6 +129,20 @@ public class ConfigStoreTests
     }
 
     [Fact]
+    public void GetBool_ignores_missing_and_non_boolean_values()
+    {
+        using var dir = new TempDir();
+        var store = Open(dir);
+        store.Merge("""{"on":true,"off":false,"s":"true","n":1}""", "test");
+
+        Assert.True(store.GetBool("on"));
+        Assert.False(store.GetBool("off"));
+        Assert.Null(store.GetBool("s"));
+        Assert.Null(store.GetBool("n"));
+        Assert.Null(store.GetBool("missing"));
+    }
+
+    [Fact]
     public void A_damaged_file_is_replaced_by_the_backup_copy()
     {
         using var dir = new TempDir();
@@ -296,7 +310,7 @@ public class AppPathsTests
         using var dir = new TempDir();
         var paths = new AppPaths(dir.Root);
 
-        foreach (var path in new[] { paths.ConfigFile, paths.UiStateFile, paths.CoverCache, paths.WebViewData, paths.LogFile })
+        foreach (var path in new[] { paths.ConfigFile, paths.UiStateFile, paths.CoverCache, paths.WebViewData, paths.LogFile, paths.CrashFile, paths.SessionFile, paths.DiagnosticFile })
         {
             Assert.StartsWith(paths.Root, path);
         }

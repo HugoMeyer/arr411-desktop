@@ -4,12 +4,14 @@ using System.Text;
 namespace Arr411.Core.Logging;
 
 /// <summary>
-/// Small rolling file log (arr411.log, rotated at 1 MB). Never log secrets: no headers, request bodies or full URLs.
+/// Small rolling file log (arr411.log, rotated at 2 MB, one older file kept). Never log secrets: no headers, request bodies or full URLs.
 /// Does nothing until <see cref="Initialize"/> is called (unit tests), or once it is given no path.
 /// </summary>
 public static class Log
 {
-    private const long MaxBytes = 1024 * 1024;
+    internal const long MaxBytes = 2 * 1024 * 1024;
+    private const int MaxFrames = 12;
+    private const int MaxDepth = 3;
     private static readonly object Gate = new();
     private static readonly UTF8Encoding Utf8 = new(false);
     private static string? _path;
@@ -24,16 +26,47 @@ public static class Log
 
     public static void Warn(string message) => Write("WARN ", message);
 
-    public static void Error(string message, Exception? ex = null) =>
-        Write("ERROR", ex is null ? message : $"{message}: {ex.GetType().Name}: {ex.Message}{Frames(ex)}");
+    public static void Error(string message, Exception? ex = null)
+    {
+        if (ex is null)
+        {
+            Write("ERROR", message);
+            return;
+        }
+
+        var text = new StringBuilder(message).Append(": ");
+        Describe(text, ex, 0);
+        Write("ERROR", text.ToString());
+    }
+
+    // The exception, then what it was caused by (the inner exceptions, a few levels down, and every one of those an AggregateException holds): a failure
+    // that is only "One or more errors occurred" says nothing.
+    private static void Describe(StringBuilder text, Exception ex, int depth)
+    {
+        if (depth > 0) text.Append(Environment.NewLine).Append(' ', depth * 2).Append("caused by: ");
+        text.Append(ex.GetType().Name).Append(": ").Append(ex.Message).Append(Frames(ex, depth));
+        if (depth + 1 >= MaxDepth) return;
+
+        if (ex is AggregateException aggregate)
+        {
+            foreach (var inner in aggregate.InnerExceptions.Take(MaxDepth)) Describe(text, inner, depth + 1);
+        }
+        else if (ex.InnerException is { } cause)
+        {
+            Describe(text, cause, depth + 1);
+        }
+    }
 
     // Where it failed, by method names only (no file paths, no arguments): enough to find the line, and nothing private.
-    private static string Frames(Exception ex)
+    private static string Frames(Exception ex, int depth)
     {
         var text = new StringBuilder();
-        foreach (var frame in new StackTrace(ex, fNeedFileInfo: false).GetFrames().Take(8))
+        foreach (var frame in new StackTrace(ex, fNeedFileInfo: false).GetFrames().Take(MaxFrames))
         {
-            if (frame.GetMethod() is { } method) text.Append(Environment.NewLine).Append("    at ").Append(method.DeclaringType?.Name).Append('.').Append(method.Name);
+            if (frame.GetMethod() is { } method)
+            {
+                text.Append(Environment.NewLine).Append(' ', depth * 2).Append("    at ").Append(method.DeclaringType?.Name).Append('.').Append(method.Name);
+            }
         }
 
         return text.ToString();

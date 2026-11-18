@@ -37,6 +37,15 @@ public sealed class AppPaths
 
     public string LogFile => Path.Combine(Root, "logs", "arr411.log");
 
+    /// <summary>The full account of every exception nobody caught, next to the log.</summary>
+    public string CrashFile => Path.Combine(Root, "logs", "crash.log");
+
+    /// <summary>Exists while the app runs and is deleted when it ends the right way: finding it again means the last run was stopped from outside.</summary>
+    public string SessionFile => Path.Combine(Root, "logs", "running.txt");
+
+    /// <summary>The same text that <see cref="Arr411.Core.Diagnostics.DiagnosticReport"/> builds, saved for the cases where the clipboard is not available.</summary>
+    public string DiagnosticFile => Path.Combine(Root, "logs", "diagnostic.txt");
+
     public static AppPaths FromEnvironment()
     {
         var custom = Environment.GetEnvironmentVariable(RootVariable);

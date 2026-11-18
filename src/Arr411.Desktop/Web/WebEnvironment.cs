@@ -31,6 +31,20 @@ internal static class WebEnvironment
         }
     }
 
+    /// <summary>The version of the runtime, for the log and the diagnostic report. Null when it is missing or cannot be told: a note for the log never stops the program.</summary>
+    public static string? RuntimeVersion()
+    {
+        try
+        {
+            var version = CoreWebView2Environment.GetAvailableBrowserVersionString();
+            return string.IsNullOrEmpty(version) ? null : version;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     public static Task<CoreWebView2Environment> CreateAsync(AppPaths paths)
     {
         Directory.CreateDirectory(paths.WebViewData);

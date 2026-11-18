@@ -10,7 +10,8 @@ public sealed class LogCollection;
 [Collection("Log")]
 public sealed class LogTests : IDisposable
 {
-    private const int MegabytePlus = 400_000;
+    // Two of them fit in a log file, three do not.
+    private static readonly int Filler = (int)(Log.MaxBytes * 2 / 5);
 
     private readonly TempDir _dir = new();
 
@@ -57,6 +58,35 @@ public sealed class LogTests : IDisposable
     }
 
     [Fact]
+    public void An_error_also_tells_what_caused_it_for_a_few_levels()
+    {
+        Log.Initialize(LogFile);
+        var failure = new InvalidOperationException("level one", new IOException("level two", new TimeoutException("level three", new FormatException("level four"))));
+
+        Log.Error("could not do it", failure);
+
+        var text = File.ReadAllText(LogFile);
+        Assert.Contains("InvalidOperationException: level one", text);
+        Assert.Contains("caused by: IOException: level two", text);
+        Assert.Contains("caused by: TimeoutException: level three", text);
+        Assert.DoesNotContain("level four", text);
+    }
+
+    [Fact]
+    public void An_error_made_of_several_tells_each_of_them()
+    {
+        Log.Initialize(LogFile);
+        var failure = new AggregateException("many failed", new IOException("first one"), new TimeoutException("second one"));
+
+        Log.Error("could not do it", failure);
+
+        var text = File.ReadAllText(LogFile);
+        Assert.Contains("AggregateException: many failed", text);
+        Assert.Contains("caused by: IOException: first one", text);
+        Assert.Contains("caused by: TimeoutException: second one", text);
+    }
+
+    [Fact]
     public void The_folder_of_the_log_is_made_when_it_is_missing()
     {
         var file = _dir.File(@"a\b\c\arr411.log");
@@ -82,10 +112,10 @@ public sealed class LogTests : IDisposable
     }
 
     [Fact]
-    public void The_log_rolls_over_to_a_second_file_once_it_holds_more_than_a_megabyte()
+    public void The_log_rolls_over_to_a_second_file_once_it_is_full()
     {
         Log.Initialize(LogFile);
-        var filler = new string('x', MegabytePlus);
+        var filler = new string('x', Filler);
         Log.Info("first " + filler);
         Log.Info("second " + filler);
         Log.Info("third " + filler);
@@ -103,7 +133,7 @@ public sealed class LogTests : IDisposable
     public void Only_the_last_full_file_is_kept()
     {
         Log.Initialize(LogFile);
-        var filler = new string('x', MegabytePlus);
+        var filler = new string('x', Filler);
         for (var round = 0; round < 2; round++)
         {
             for (var i = 0; i < 3; i++) Log.Info($"round {round} line {i} {filler}");

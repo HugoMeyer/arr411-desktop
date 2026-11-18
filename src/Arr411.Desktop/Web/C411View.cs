@@ -471,7 +471,7 @@ internal sealed class C411View : Panel
 
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        Log.Warn($"Web view process failed in the C411 tab: {e.ProcessFailedKind} ({e.Reason})");
+        Log.Warn($"Web view process failed in the C411 tab: {WebFailure.Describe(e)}");
         if (IsDisposed) return;
 
         if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)

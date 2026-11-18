@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security;
 using Arr411.Core.Bridge;
+using Arr411.Core.Diagnostics;
 using Arr411.Core.Files;
 using Arr411.Core.Hosting;
 using Arr411.Core.Logging;
@@ -61,6 +62,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
 
     private EngineBridge? _engineBridge;
     private PageBridge? _pageBridge;
+    private HangWatch? _hangWatch;
     private Font? _toastFont;
     private int _toastFontDpi;
     private bool _foreground;
@@ -191,7 +193,10 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         _tray.SetActive(count);
     }
 
-    void ISpaShell.CopyText(string text)
+    void ISpaShell.CopyText(string text) => CopyToClipboard(text);
+
+    // False when nothing was copied (another program holds the clipboard open): whoever asked for the copy says so instead of looking done.
+    private static bool CopyToClipboard(string text)
     {
 #if DEBUG
         // Debug builds only, for the end-to-end tests, which must not overwrite what the user has copied: a file instead of the clipboard.
@@ -200,22 +205,24 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
             try
             {
                 File.WriteAllText(sink, text);
+                return true;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 Log.Warn("Clipboard sink not written: " + ex.Message);
+                return false;
             }
-
-            return;
         }
 #endif
         try
         {
             Clipboard.SetDataObject(text, copy: true, retryTimes: 5, retryDelay: 100);
+            return true;
         }
         catch (ExternalException ex)
         {
             Log.Warn("Clipboard unavailable: " + ex.Message);
+            return false;
         }
     }
 
@@ -284,7 +291,9 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         set => _services.Ui.CloseToTray = value;
     }
 
-    void IAppMenuHost.OpenLogs()
+    void IAppMenuHost.OpenLogs() => OpenLogsFolder();
+
+    private void OpenLogsFolder()
     {
         try
         {
@@ -298,6 +307,45 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
         {
             Log.Warn("The logs folder could not be opened: " + ex.GetType().Name);
+        }
+    }
+
+    void IAppMenuHost.CopyDiagnostics() => _ = CopyDiagnosticsAsync();
+
+    // Reading the files and asking Windows for its events can take seconds: the report is made away from the window, which keeps answering.
+    private async Task CopyDiagnosticsAsync()
+    {
+        try
+        {
+            var (report, saved) = await Task.Run(() =>
+            {
+                var text = _services.BuildDiagnosticReport();
+                return (text, _services.SaveDiagnosticReport(text));
+            });
+            if (IsDisposed) return;
+
+            if (CopyToClipboard(report))
+            {
+                Log.Info("The diagnostic report was copied to the clipboard");
+                Tell("Rapport de diagnostic copié : colle-le dans un message.");
+                return;
+            }
+
+            Log.Warn("The diagnostic report could not be copied to the clipboard");
+            if (saved)
+            {
+                Fail("Le presse-papiers est indisponible : le rapport est dans le fichier diagnostic.txt du dossier des journaux.");
+                OpenLogsFolder();
+            }
+            else
+            {
+                Fail("Impossible de copier le rapport de diagnostic.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("The diagnostic report could not be made", ex);
+            if (!IsDisposed) Fail("Impossible de créer le rapport de diagnostic.");
         }
     }
 
@@ -347,6 +395,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         if (_webStarted) return;
 
         _webStarted = true;
+        _hangWatch = new HangWatch(job => BeginInvoke(job), Log.Info, message => Log.Warn(message + " | " + MemorySnapshot.Take()));
         BeginInvoke(StartWeb);
     }
 
@@ -377,6 +426,10 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         if (e.Cancel) return;
 
         var reason = e.CloseReason;
+
+        // Windows may end the process before anything is disposed: the end of the session is an end like any other, not a stop from outside.
+        if (reason == CloseReason.WindowsShutDown) _services.EndRun();
+
         if (reason == CloseReason.UserClosing && !_exiting && _services.Ui.CloseToTray)
         {
             // The cross only hides the window: the downloads go on being watched, and the icon is the way back.
@@ -400,6 +453,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        _hangWatch?.Dispose();
         _toastTimer.Dispose();
         _bridge.Dispose();
         _pageBridge?.Dispose();
@@ -735,6 +789,13 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     {
         ShowWindow();
         ShowToast(text);
+    }
+
+    // The answer to something the user asked for, where the user is looking: on the window when it is on screen, else on the icon.
+    private void Tell(string text)
+    {
+        if (Visible && WindowState != FormWindowState.Minimized) ShowToast(text);
+        else _tray.Hint(text);
     }
 
     private void ShowTrayHintOnce()

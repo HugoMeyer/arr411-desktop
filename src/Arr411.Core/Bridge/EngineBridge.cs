@@ -198,14 +198,11 @@ public sealed class EngineBridge : IEngineClient, IDisposable
             var result = await _http.SendAsync(request, _lifetime.Token).ConfigureAwait(false);
             if (epoch != Volatile.Read(ref _epoch) || _lifetime.IsCancellationRequested) return;
 
-            Post(new JsonObject
-            {
-                ["t"] = "httpDone",
-                ["id"] = id,
-                ["status"] = result.Status,
-                ["error"] = result.Error,
-                ["text"] = result.Text,
-            });
+            // The text goes in last and on its own: it can be tens of MB (see JsonText.WithText).
+            PostJson(JsonText.WithText(
+                new JsonObject { ["t"] = "httpDone", ["id"] = id, ["status"] = result.Status, ["error"] = result.Error },
+                "text",
+                result.Text));
         }
         catch (Exception ex)
         {
@@ -245,9 +242,11 @@ public sealed class EngineBridge : IEngineClient, IDisposable
 
     private void PostHandle(Call call) => Post(new JsonObject { ["t"] = "handle", ["id"] = call.Id, ["raw"] = call.Message });
 
-    private void Post(JsonObject message)
+    private void Post(JsonObject message) => PostJson(JsonText.Stringify(message));
+
+    private void PostJson(string json)
     {
-        if (!_disposed) _post(JsonText.Stringify(message));
+        if (!_disposed) _post(json);
     }
 
     private static string ErrorReply(string error) => JsonText.Stringify(new JsonObject { ["ok"] = false, ["error"] = error });

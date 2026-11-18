@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -144,25 +143,17 @@ public sealed class NativeHttp : IDisposable
     private static async Task<string> ReadBodyAsync(HttpResponseMessage response, CancellationTokenSource timeout, TimeSpan readTimeout)
     {
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
-        using var buffer = new MemoryStream();
-        var chunk = ArrayPool<byte>.Shared.Rent(16 * 1024);
-        try
+        using var body = new ChunkedBody();
+        while (true)
         {
-            while (true)
-            {
-                timeout.CancelAfter(readTimeout);
-                var read = await stream.ReadAsync(chunk, timeout.Token).ConfigureAwait(false);
-                if (read == 0) break;
-                buffer.Write(chunk, 0, read);
-                if (buffer.Length > MaxResponseBytes) throw new InvalidDataException("réponse trop volumineuse");
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(chunk);
+            timeout.CancelAfter(readTimeout);
+            var read = await stream.ReadAsync(body.Free(), timeout.Token).ConfigureAwait(false);
+            if (read == 0) break;
+            body.Advance(read);
+            if (body.Length > MaxResponseBytes) throw new InvalidDataException("réponse trop volumineuse");
         }
 
-        return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+        return body.Decode();
     }
 
     private static string? Text(JsonNode? node) => JsonText.Str(node);

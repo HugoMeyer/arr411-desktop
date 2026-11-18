@@ -7,8 +7,9 @@ public sealed class AppMenuTests(ShellApp shell) : IClassFixture<ShellApp>
     // The entries of the menu of the app, counted from the top as the Down key does (the separators are skipped).
     private const int AppSettings = 1;
     private const int CloseToTray = 4;
-    private const int About = 6;
-    private const int Quit = 7;
+    private const int Diagnostics = 6;
+    private const int About = 7;
+    private const int Quit = 8;
 
     // The entries of the menu of the C411 tab.
     private const int Reload = 1;
@@ -167,6 +168,30 @@ public sealed class AppMenuTests(ShellApp shell) : IClassFixture<ShellApp>
         }
 
         await Wait.UntilAsync(() => App.ReadUiState().CloseToTray, "the setting being switched on again");
+    }
+
+    [Fact]
+    public async Task The_diagnostic_item_copies_a_report_without_the_secrets_and_keeps_it_in_a_file()
+    {
+        File.Delete(App.ClipboardSinkFile);
+        await App.ShowTabAsync("radarr");
+
+        await App.ClickMenuAsync();
+        await App.WaitForWindowCountAsync(2);
+        await App.ChooseMenuItemAsync(Diagnostics);
+
+        // The last section is the log: a report that is still being written does not have it yet.
+        await Wait.UntilAsync(() => App.CopiedText()?.Contains("== Log (last", StringComparison.Ordinal) == true, "the report being copied", timeoutMs: 60_000);
+        var report = App.CopiedText()!;
+        Assert.Contains("Arr411 Desktop diagnostic report", report, StringComparison.Ordinal);
+        Assert.Contains("Version: " + AppProcess.ExpectedVersion, report, StringComparison.Ordinal);
+        Assert.Contains("== Memory ==", report, StringComparison.Ordinal);
+        Assert.DoesNotContain(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), report, StringComparison.OrdinalIgnoreCase);
+
+        var saved = Path.Combine(App.DataDir, "logs", "diagnostic.txt");
+        await Wait.UntilAsync(() => File.Exists(saved), "the report being saved");
+        Assert.Equal(report.Trim(), File.ReadAllText(saved).Trim());
+        await App.WaitForLogAsync("The diagnostic report was copied to the clipboard");
     }
 
     [Fact]

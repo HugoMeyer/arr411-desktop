@@ -22,6 +22,9 @@ internal interface IAppMenuHost
 
     void OpenLogs();
 
+    /// <summary>Puts a report of what the app knows about itself (versions, memory, last crash, end of the log) on the clipboard, to paste in a message.</summary>
+    void CopyDiagnostics();
+
     void ShowAbout();
 
     void Quit();
@@ -54,6 +57,7 @@ internal static class AppMenu
         menu.Items.Add(keepRunning);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Item("Ouvrir le dossier des journaux", host.OpenLogs));
+        menu.Items.Add(Item("Copier le rapport de diagnostic", host.CopyDiagnostics));
         menu.Items.Add(Item("À propos d'Arr411", host.ShowAbout));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Item("Quitter", host.Quit));

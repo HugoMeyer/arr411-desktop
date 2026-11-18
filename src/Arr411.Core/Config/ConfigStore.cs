@@ -52,6 +52,15 @@ public sealed class ConfigStore : IConfigReader
         lock (_gate) return _data.TryGetPropertyValue(key, out var node) ? JsonText.Str(node) : null;
     }
 
+    /// <summary>The value of an on/off setting; null when it is missing or not a boolean.</summary>
+    public bool? GetBool(string key)
+    {
+        lock (_gate)
+        {
+            return _data.TryGetPropertyValue(key, out var node) && node is JsonValue value && value.TryGetValue<bool>(out var flag) ? flag : null;
+        }
+    }
+
     /// <summary>Applies a JSON object patch. Returns false when it is invalid or changes nothing.</summary>
     public bool Merge(string patchJson, string origin)
     {

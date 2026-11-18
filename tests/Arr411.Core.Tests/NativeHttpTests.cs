@@ -39,6 +39,19 @@ public class NativeHttpTests
     }
 
     [Fact]
+    public async Task A_body_of_many_blocks_is_decoded_whole_even_where_a_character_is_cut_in_two()
+    {
+        var text = string.Concat(Enumerable.Repeat("héllo ✓ 😀 \"x\"\n", 30_000));
+        using var server = new TestHttpServer(_ => TestResponse.Text(text));
+        using var http = Client();
+
+        var result = await http.SendAsync(Request(server.Url("/big")));
+
+        Assert.Equal(200, result.Status);
+        Assert.Equal(text, result.Text);
+    }
+
+    [Fact]
     public async Task Origin_referer_and_user_agent_are_set_like_the_android_app_does()
     {
         using var server = new TestHttpServer();

@@ -198,14 +198,11 @@ public sealed class SpaBridge : IDisposable
             var result = await _http.SendAsync(request, _lifetime.Token).ConfigureAwait(false);
             if (epoch != Volatile.Read(ref _epoch) || _lifetime.IsCancellationRequested) return;
 
-            Post(new JsonObject
-            {
-                ["t"] = "httpDone",
-                ["id"] = id,
-                ["status"] = result.Status,
-                ["error"] = result.Error,
-                ["body"] = result.Text,
-            });
+            // The body goes in last and on its own: it can be tens of MB (see JsonText.WithText).
+            PostJson(JsonText.WithText(
+                new JsonObject { ["t"] = "httpDone", ["id"] = id, ["status"] = result.Status, ["error"] = result.Error },
+                "body",
+                result.Text));
         }
         catch (Exception ex)
         {
@@ -260,9 +257,11 @@ public sealed class SpaBridge : IDisposable
 
     private void PostForeground() => Post(new JsonObject { ["t"] = "foreground", ["on"] = _foreground });
 
-    private void Post(JsonObject message)
+    private void Post(JsonObject message) => PostJson(JsonText.Stringify(message));
+
+    private void PostJson(string json)
     {
-        if (!_disposed) _post(JsonText.Stringify(message));
+        if (!_disposed) _post(json);
     }
 
     private void FailPendingCalls()

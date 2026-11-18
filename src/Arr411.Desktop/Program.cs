@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Security;
 using Arr411.Core.Config;
+using Arr411.Core.Diagnostics;
 using Arr411.Core.Logging;
 using Arr411.Core.Platform;
 using Arr411.Core.Shell;
@@ -33,9 +34,12 @@ internal static class Program
         if (request.Quit) return Quit(name, args, directory);
 
         ApplicationConfiguration.Initialize();
+        CrashLog.Initialize(paths.CrashFile);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, e) => Log.Error("Unhandled UI exception", e.Exception);
-        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Error("Unhandled exception", e.ExceptionObject as Exception);
+        var uncaught = new UncaughtExceptions();
+        Application.ThreadException += (_, e) => uncaught.OnWindowThread(e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => CrashLog.Record("Unhandled exception", UncaughtExceptions.AsException(e.ExceptionObject), e.IsTerminating);
+        TaskScheduler.UnobservedTaskException += uncaught.OnUnobservedTask;
 
         var gate = SingleInstance.TryAcquire(name);
         if (gate is null)

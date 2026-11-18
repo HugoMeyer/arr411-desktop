@@ -265,7 +265,7 @@ internal abstract class LocalWebView : Panel
 
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        Log.Warn($"Web view process failed in the {_subject}: {e.ProcessFailedKind} ({e.Reason})");
+        Log.Warn($"Web view process failed in the {_subject}: {WebFailure.Describe(e)}");
         if (IsDisposed) return;
 
         if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
