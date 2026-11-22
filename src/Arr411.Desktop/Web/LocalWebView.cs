@@ -21,9 +21,12 @@ internal abstract class LocalWebView : Panel
     private readonly string _adapter;
     private readonly string _startUrl;
     private readonly bool _acceptsDrops;
+    private readonly RenderCrashPolicy _crashes = new();
     private Func<string, Uri, CancellationToken, Task<HostResponse>>? _handler;
     private Action<string>? _onMessage;
     private Action<string>? _openExternal;
+    private OfflinePanel? _stopped;
+    private long _unresponsiveLoggedAt;
     private bool _presented = true;
     private bool _lost;
 
@@ -106,9 +109,12 @@ internal abstract class LocalWebView : Panel
         }
     }
 
+    /// <summary>Loads the page again because the user asked for it: it gets all its chances back.</summary>
     public void Reload()
     {
-        if (!_lost) _web.CoreWebView2?.Reload();
+        _crashes.Reset();
+        if (_stopped is not null) _stopped.Visible = false;
+        ReloadPage();
     }
 
     /// <param name="handler">Answers the requests of the page.</param>
@@ -145,9 +151,26 @@ internal abstract class LocalWebView : Panel
         core.Navigate(_startUrl);
     }
 
-    /// <summary>The page died with its renderer; it is about to be loaded again. UI thread.</summary>
+    /// <summary>The page died with its renderer; it is about to be loaded again, unless it died too often (see <see cref="OnReloadStopped"/>). UI thread.</summary>
     protected virtual void OnPageLost()
     {
+    }
+
+    /// <summary>
+    /// The renderer stopped too many times in a row: the page is no longer loaded again by itself. UI thread.
+    /// By default the user is told and can try again, which gives the page all its chances back.
+    /// </summary>
+    protected virtual void OnReloadStopped()
+    {
+        if (_stopped is null)
+        {
+            _stopped = new OfflinePanel { Dock = DockStyle.Fill };
+            _stopped.RetryRequested += (_, _) => Reload();
+            Controls.Add(_stopped);
+        }
+
+        _stopped.Present(OfflinePanel.CrashedMessage, OfflinePanel.ReloadText);
+        _stopped.BringToFront();
     }
 
     protected override void Dispose(bool disposing)
@@ -164,6 +187,12 @@ internal abstract class LocalWebView : Panel
     private void Post(string json)
     {
         if (!_lost && !IsDisposed && _web.CoreWebView2 is { } core) core.PostWebMessageAsJson(json);
+    }
+
+    // Also what a stop of the renderer does by itself, where the policy has already counted it.
+    private void ReloadPage()
+    {
+        if (!_lost && !IsDisposed) _web.CoreWebView2?.Reload();
     }
 
     private bool IsOwnUri(string? uri) => Uri.TryCreate(uri, UriKind.Absolute, out var parsed) && IsOwnUri(parsed);
@@ -265,7 +294,11 @@ internal abstract class LocalWebView : Panel
 
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        Log.Warn($"Web view process failed in the {_subject}: {WebFailure.Describe(e)}");
+        if (WebFailure.IsWorthALine(e.ProcessFailedKind, ref _unresponsiveLoggedAt))
+        {
+            Log.Warn($"Web view process failed in the {_subject}: {WebFailure.Describe(e)}");
+        }
+
         if (IsDisposed) return;
 
         if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
@@ -275,9 +308,19 @@ internal abstract class LocalWebView : Panel
             return;
         }
 
+        // A page that does not answer is only logged: a long task cannot be told from a hang, and reloading would lose what the page holds.
         if (e.ProcessFailedKind != CoreWebView2ProcessFailedKind.RenderProcessExited) return;
 
         OnPageLost();
-        BeginInvoke(Reload);
+        if (_crashes.GivenUp) return;
+
+        if (_crashes.ShouldReload())
+        {
+            BeginInvoke(ReloadPage);
+            return;
+        }
+
+        Log.Error($"The {_subject} stopped too many times in a row: it is no longer loaded again by itself");
+        OnReloadStopped();
     }
 }

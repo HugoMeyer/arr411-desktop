@@ -240,7 +240,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
 
     Task<string?> IPageShell.CookieHeaderAsync(Uri url) => _c411.CookieHeaderAsync(url);
 
-    void IPageShell.Dropped(DroppedContent content) => OnDropped(content);
+    void IPageShell.Dropped(DroppedContent content) => OnPageDropped(content);
 
     void IAppMenuHost.OpenWindow() => ShowWindow();
 
@@ -592,7 +592,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
 
         var engineBridge = new EngineBridge(_services.Config, _services.Http, this, _engine.PostToPage);
         _engineBridge = engineBridge;
-        var pageBridge = new PageBridge(engineBridge, this, _services.PageFetcher, _services.Paths.Downloads, _c411.PostToPage)
+        var pageBridge = new PageBridge(engineBridge, this, new WindowsUserPresence(() => Handle), _services.PageFetcher, _services.Paths.Downloads, _c411.PostToPage)
         {
             OffScreenGrace = PageGrace(),
             RateWindow = PageRateWindow(),
@@ -683,7 +683,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         return LaunchRequest.Empty;
     }
 
-    // A page reported a drop. The window does what it does for a drop on its navigation bar, except that the cursor could not refuse it:
+    // The web app reported a drop. The window does what it does for a drop on its navigation bar, except that the cursor could not refuse it:
     // what is not usable is said here.
     private void OnDropped(DroppedContent content)
     {
@@ -692,6 +692,27 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         try
         {
             if (content.Request.HasWork) RunRequest(content.Request);
+            if (content.Files.Count > 0) _bridge.Share(SharePayload.Files(content.Files));
+
+            if (content.Problems.Count > 0) ShowToast(content.Problems[0]);
+            else if (!content.HasWork) ShowToast("Rien à ajouter : dépose un lien magnet ou un fichier .torrent.");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("A drop on a page failed", ex);
+        }
+    }
+
+    // The C411 page reported a drop (the user's, as far as the bridge can tell). The window hands it over as it does for the web app, but quietly:
+    // a page does not get the window to come to the front, nor the tab to change (OnDropped is for the web app, which is the app's own).
+    private void OnPageDropped(DroppedContent content)
+    {
+        if (IsDisposed) return;
+
+        try
+        {
+            if (content.Request.C411Url is { } url) _c411.Navigate(url);
+            if (content.Request.Magnets.Count > 0) _bridge.Share(SharePayload.Text(string.Join('\n', content.Request.Magnets)));
             if (content.Files.Count > 0) _bridge.Share(SharePayload.Files(content.Files));
 
             if (content.Problems.Count > 0) ShowToast(content.Problems[0]);

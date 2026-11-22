@@ -29,6 +29,11 @@ internal sealed class C411View : Panel
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Theme.Background };
     private readonly LoadingBar _bar = new() { Dock = DockStyle.Top };
     private readonly System.Windows.Forms.Timer _cookieTimer = new() { Interval = CookiePassMilliseconds };
+
+    // Not the grace of the bridge: that one is shortened by the tests, which still drive the page of a tab they have just left.
+    private readonly System.Windows.Forms.Timer _suspendTimer = new() { Interval = (int)PageBridge.DefaultOffScreenGrace.TotalMilliseconds };
+    private readonly RenderCrashPolicy _crashes = new();
+    private long _unresponsiveLoggedAt;
     private PageBridge? _bridge;
     private Action<string>? _openExternal;
     private string _userAgent = "";
@@ -57,6 +62,7 @@ internal sealed class C411View : Panel
         Controls.Add(_bar);
         _offline.RetryRequested += (_, _) => Reload();
         _cookieTimer.Tick += async (_, _) => await KeepSessionCookiesAsync();
+        _suspendTimer.Tick += async (_, _) => await SuspendAsync();
     }
 
     /// <summary>
@@ -90,7 +96,8 @@ internal sealed class C411View : Panel
     /// <summary>
     /// Tells the page whether anyone can see it: a page nobody sees stops drawing and the browser may put it to sleep (the site is a heavy one),
     /// and what it asks of the engine is no longer served once it has been out of sight for a while (see <see cref="PageBridge.SetOnScreen"/>).
-    /// The window says it at each change of what is on screen (see <see cref="WebViewVisibility"/>).
+    /// The window says it at each change of what is on screen (see <see cref="WebViewVisibility"/>). The page is put to sleep once it has been out
+    /// of sight for as long as that grace, and wakes up when it is shown again.
     /// </summary>
     public void SetPresented(bool presented)
     {
@@ -99,6 +106,9 @@ internal sealed class C411View : Panel
         _presented = presented;
         WebViewVisibility.Apply(_web, presented);
         _bridge?.SetOnScreen(presented);
+
+        if (presented) WakeUp();
+        else ArmSuspension();
     }
 
     /// <param name="bridge">Answers the page.</param>
@@ -159,6 +169,7 @@ internal sealed class C411View : Panel
             return false;
         }
 
+        _crashes.Reset();
         _pendingUrl = page.AbsoluteUri;
         _wanted = true;
         if (_ready) LoadPending();
@@ -175,19 +186,11 @@ internal sealed class C411View : Panel
         return true;
     }
 
-    /// <summary>Loads the page again, or tries again after a failure.</summary>
+    /// <summary>Loads the page again, or tries again after a failure. It is what the user asks for: a page that stopped too often is loaded by itself again after it.</summary>
     public void Reload()
     {
-        if (!_ready) return;
-
-        if (!_navigated)
-        {
-            EnsureLoaded();
-            return;
-        }
-
-        if (_failed) _web.CoreWebView2.Navigate(_lastUrl ?? HomeUrl);
-        else _web.CoreWebView2.Reload();
+        _crashes.Reset();
+        ReloadPage();
     }
 
     /// <summary>Sends a JSON message to the page. May be called from any thread.</summary>
@@ -251,10 +254,67 @@ internal sealed class C411View : Panel
         if (disposing)
         {
             _cookieTimer.Dispose();
+            _suspendTimer.Dispose();
             _web.Dispose();
         }
 
         base.Dispose(disposing);
+    }
+
+    // Also what a stop of the render process does by itself, where the policy has already counted it.
+    private void ReloadPage()
+    {
+        if (!_ready || _lost || IsDisposed) return;
+
+        if (!_navigated)
+        {
+            EnsureLoaded();
+            return;
+        }
+
+        if (_failed) _web.CoreWebView2.Navigate(_lastUrl ?? HomeUrl);
+        else _web.CoreWebView2.Reload();
+    }
+
+    // The tab is put to sleep (the browser then stops its timers and gives its memory back) once nobody has seen it for as long as the grace.
+    // Never the engine or the web app: the engine has to run whatever the window does, and the web app is the window.
+    private void ArmSuspension()
+    {
+        _suspendTimer.Stop();
+        _suspendTimer.Start();
+    }
+
+    private async Task SuspendAsync()
+    {
+        _suspendTimer.Stop();
+        if (_presented || _lost || IsDisposed) return;
+
+        try
+        {
+            // A page that was shown again in the meantime is woken by the browser as it becomes visible; the check afterwards covers the race.
+            if (_web.CoreWebView2 is not { IsSuspended: false } core || !await core.TrySuspendAsync()) return;
+
+            Log.Info("The C411 tab was put to sleep");
+            if (_presented) WakeUp();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or COMException or ObjectDisposedException)
+        {
+            Log.Warn("The C411 tab was not put to sleep: " + ex.GetType().Name);
+        }
+    }
+
+    private void WakeUp()
+    {
+        _suspendTimer.Stop();
+
+        try
+        {
+            if (_web.CoreWebView2 is { IsSuspended: true } core) core.Resume();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or COMException or ObjectDisposedException)
+        {
+            Log.Warn("The C411 tab was not woken up: " + ex.GetType().Name);
+        }
     }
 
     private void LoadPending()
@@ -341,10 +401,16 @@ internal sealed class C411View : Panel
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
         _bar.Stop();
+
+        // A page that finished loading while nobody could see it (a reload after a stop of its process) goes back to sleep too.
+        if (!_presented && !_suspendTimer.Enabled) ArmSuspension();
+
         if (e.IsSuccess)
         {
             _failed = false;
-            _offline.Visible = false;
+
+            // Once the page has stopped too often, only the user brings it back (the panel is the way): a late event must not hide it.
+            if (!_crashes.GivenUp) _offline.Visible = false;
             if (!_cookieTimer.Enabled) _cookieTimer.Start();
 
             // A login is often what the page just did: keep it now, not at the next tick.
@@ -358,7 +424,7 @@ internal sealed class C411View : Panel
 
         Log.Warn("C411 page not loaded: " + e.WebErrorStatus);
         _failed = true;
-        _offline.Visible = true;
+        if (!_crashes.GivenUp) _offline.Present(OfflinePanel.Message, OfflinePanel.RetryText);
     }
 
     private void OnContentLoading(object? sender, CoreWebView2ContentLoadingEventArgs e) => _bridge?.NewPage();
@@ -460,18 +526,21 @@ internal sealed class C411View : Panel
     private static void OnContextMenuRequested(object? sender, CoreWebView2ContextMenuRequestedEventArgs e) =>
         WebViewSettings.RestrictContextMenu(e, MenuCommands);
 
-    // Only the page of c411.org itself may talk to the app: its frames (third-party) and anything else are ignored.
+    // Only the page on screen may talk to the app. WebView2 raises this event for the top-level document alone: what a frame posts reaches the
+    // app only through CoreWebView2Frame.WebMessageReceived, which this view never subscribes to (there is no FrameCreated handler), so a
+    // frame, third-party or not, cannot reach the bridge. What is left to check is that the document is the one on screen, and still a c411.org page.
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        if (Uri.TryCreate(e.Source, UriKind.Absolute, out var source) && source.Scheme == Uri.UriSchemeHttps && ExternalLinks.IsC411Host(source.Host))
-        {
-            _bridge?.OnMessage(e.WebMessageAsJson);
-        }
+        if (ExternalLinks.IsMessageFromShownPage(e.Source, _web.CoreWebView2?.Source)) _bridge?.OnMessage(e.WebMessageAsJson);
     }
 
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        Log.Warn($"Web view process failed in the C411 tab: {WebFailure.Describe(e)}");
+        if (WebFailure.IsWorthALine(e.ProcessFailedKind, ref _unresponsiveLoggedAt))
+        {
+            Log.Warn($"Web view process failed in the C411 tab: {WebFailure.Describe(e)}");
+        }
+
         if (IsDisposed) return;
 
         if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
@@ -480,12 +549,24 @@ internal sealed class C411View : Panel
             _lost = true;
             _ready = false;
             _cookieTimer.Stop();
+            _suspendTimer.Stop();
             BrowserLost?.Invoke(this, EventArgs.Empty);
             return;
         }
 
-        if (e.ProcessFailedKind != CoreWebView2ProcessFailedKind.RenderProcessExited) return;
+        if (e.ProcessFailedKind is not (CoreWebView2ProcessFailedKind.RenderProcessExited or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)) return;
 
-        BeginInvoke(Reload);
+        // A page that does not answer is reported again every few seconds: once the app has given up on it there is nothing more to do.
+        if (_crashes.GivenUp) return;
+
+        if (_crashes.ShouldReload()) BeginInvoke(ReloadPage);
+        else GiveUpReloading();
+    }
+
+    private void GiveUpReloading()
+    {
+        Log.Error("The C411 tab stopped too many times in a row: it is no longer loaded again by itself");
+        _bar.Stop();
+        _offline.Present(OfflinePanel.CrashedMessage, OfflinePanel.ReloadText);
     }
 }

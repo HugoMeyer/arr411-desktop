@@ -180,6 +180,37 @@ public class NativeHttpTests
     }
 
     [Fact]
+    public async Task A_cookie_stays_with_the_server_that_set_it_even_on_the_same_machine()
+    {
+        using var qbittorrent = new TestHttpServer(_ => TestResponse.Text("Ok.", 200, ("Set-Cookie", "SID=qbt-session; path=/")));
+        using var radarr = new TestHttpServer(_ => TestResponse.Text("{}", 200, ("Set-Cookie", "SID=radarr-session; path=/")));
+        using var http = Client();
+
+        await http.SendAsync(Request(qbittorrent.Url("/api/v2/auth/login")));
+        await http.SendAsync(Request(radarr.Url("/api/v3/system/status")));
+        await http.SendAsync(Request(qbittorrent.Url("/api/v2/torrents/info")));
+        await http.SendAsync(Request(radarr.Url("/api/v3/movie")));
+
+        Assert.Null(radarr.Requests[0].Header("Cookie"));
+        Assert.Equal("SID=qbt-session", qbittorrent.Requests[1].Header("Cookie"));
+        Assert.Equal("SID=radarr-session", radarr.Requests[1].Header("Cookie"));
+    }
+
+    [Fact]
+    public async Task A_cookie_header_set_by_the_request_goes_along_with_the_cookie_of_the_server()
+    {
+        using var server = new TestHttpServer(request => request.Header("Cookie") is null
+            ? TestResponse.Text("first", 200, ("Set-Cookie", "SID=abc123; path=/"))
+            : TestResponse.Text("second"));
+        using var http = Client();
+
+        await http.SendAsync(Request(server.Url("/login")));
+        await http.SendAsync(Request(server.Url("/list"), headers: new JsonObject { ["Cookie"] = "mine=1" }));
+
+        Assert.Equal("mine=1; SID=abc123", server.Requests[1].Header("Cookie"));
+    }
+
+    [Fact]
     public async Task Compressed_responses_are_decoded()
     {
         using var server = new TestHttpServer(_ => TestResponse.Gzip("zipped ✓"));
@@ -351,10 +382,10 @@ public class NativeHttpTests
     }
 
     [Theory]
-    [InlineData("""{"url":"not a url"}""", "Adresse invalide : not a url")]
-    [InlineData("""{"url":"file:///C:/Windows/win.ini"}""", "Adresse invalide : file:///C:/Windows/win.ini")]
-    [InlineData("""{"url":"ftp://example.com/"}""", "Adresse invalide : ftp://example.com/")]
-    [InlineData("""{"method":"GET"}""", "Adresse invalide : adresse vide")]
+    [InlineData("""{"url":"not a url"}""", NativeHttp.InvalidAddress)]
+    [InlineData("""{"url":"file:///C:/Windows/win.ini"}""", NativeHttp.InvalidAddress)]
+    [InlineData("""{"url":"ftp://example.com/"}""", NativeHttp.InvalidAddress)]
+    [InlineData("""{"method":"GET"}""", NativeHttp.InvalidAddress)]
     [InlineData("""{"url":"http://127.0.0.1:1/","method":"TRACE"}""", "Réseau : Invalid HTTP method: TRACE")]
     public async Task Invalid_requests_are_reported_without_touching_the_network(string request, string expected)
     {
@@ -364,6 +395,17 @@ public class NativeHttpTests
 
         Assert.Equal(0, result.Status);
         Assert.Equal(expected, result.Error);
+    }
+
+    [Fact]
+    public async Task An_invalid_address_is_never_repeated_in_the_error()
+    {
+        using var http = Client();
+
+        var result = await http.SendAsync("""{"url":"ftp://admin:hunter2@nas.local/"}""");
+
+        Assert.Equal(NativeHttp.InvalidAddress, result.Error);
+        Assert.DoesNotContain("hunter2", result.Error);
     }
 
     [Theory]
@@ -413,7 +455,7 @@ public class NativeHttpTests
         Assert.Equal(
             "Réseau : erreur SSL / certificat (boom)",
             NativeHttp.Describe(Wrap(HttpRequestError.SecureConnectionError, new AuthenticationException("bad certificate"))));
-        Assert.Equal("Adresse invalide : bad", NativeHttp.Describe(new UriFormatException("bad")));
+        Assert.Equal(NativeHttp.InvalidAddress, NativeHttp.Describe(new UriFormatException("bad")));
         Assert.Equal("Réseau : connexion impossible (boom)", NativeHttp.Describe(Wrap(HttpRequestError.ConnectionError, new IOException("x"))));
         Assert.Equal("Réseau : something", NativeHttp.Describe(new InvalidOperationException("something")));
     }

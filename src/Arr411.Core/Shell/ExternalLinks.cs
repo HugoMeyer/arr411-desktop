@@ -40,9 +40,39 @@ public static class ExternalLinks
     /// </summary>
     public static Uri? C411Page(string? url)
     {
-        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)) return null;
-        if (uri.Scheme is not ("http" or "https") || !IsC411Host(uri.Host) || uri.UserInfo.Length > 0 || !uri.IsDefaultPort) return null;
+        if (SiteAddress(url) is not { } uri) return null;
 
         return uri.Scheme == Uri.UriSchemeHttps ? uri : new UriBuilder(uri) { Scheme = Uri.UriSchemeHttps, Port = -1 }.Uri;
+    }
+
+    /// <summary>
+    /// Whether a message that reached the C411 tab was sent by the page on screen: both addresses are pages of c411.org over https (see
+    /// <see cref="C411Page"/>, without the upgrade: a message of a clear-text page is refused) and of the same host. Another subdomain of
+    /// c411.org, or another site, is not the page the user is looking at.
+    /// </summary>
+    /// <param name="messageSource">The address of the document that sent the message.</param>
+    /// <param name="shownPage">The address of the page on screen.</param>
+    public static bool IsMessageFromShownPage(string? messageSource, string? shownPage) =>
+        SiteAddress(messageSource) is { Scheme: "https" } source
+        && SiteAddress(shownPage) is { Scheme: "https" } shown
+        && source.Host.Equals(shown.Host, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// What Windows is asked to open: the address as the framework writes it (trimmed, escaped), for a web page or the page of Windows Settings, and null
+    /// for anything else. The shell takes a text that is no address for a program to start.
+    /// </summary>
+    public static string? ShellTarget(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)) return null;
+
+        return uri.Scheme is "http" or "https" or "ms-settings" ? uri.AbsoluteUri : null;
+    }
+
+    // The address of the real site, as it was written: an http or https one of c411.org, with no user name and no other port.
+    private static Uri? SiteAddress(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)) return null;
+
+        return uri.Scheme is "http" or "https" && IsC411Host(uri.Host) && uri.UserInfo.Length == 0 && uri.IsDefaultPort ? uri : null;
     }
 }

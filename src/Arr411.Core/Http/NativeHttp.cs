@@ -15,6 +15,8 @@ public sealed class NativeHttp : IDisposable
 {
     public const int MaxResponseBytes = 128 * 1024 * 1024;
 
+    internal const string InvalidAddress = "Adresse invalide : elle doit commencer par http:// ou https://";
+
     public static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(20);
     public static readonly TimeSpan DefaultReadTimeout = TimeSpan.FromSeconds(60);
 
@@ -76,24 +78,23 @@ public sealed class NativeHttp : IDisposable
     }
 
     // The redirects are not left to the built-in handler: it sends the headers (the API key) and the body (the password of a login, with a 307)
-    // wherever the server points to.
-    private static SameServerRedirectHandler CreateHandler() => new(new SocketsHttpHandler
+    // wherever the server points to. Neither are the cookies: one jar for all of them would give qBittorrent's session to the other servers.
+    private static SameServerRedirectHandler CreateHandler() => new(new OriginCookieHandler(new SocketsHttpHandler
     {
         ConnectTimeout = ConnectTimeout,
         AutomaticDecompression = DecompressionMethods.All,
-        UseCookies = true,
-        CookieContainer = new CookieContainer(),
+        UseCookies = false,
         AllowAutoRedirect = false,
         PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-    });
+    }));
 
     private HttpRequestMessage BuildRequest(string requestJson)
     {
         if (JsonNode.Parse(requestJson) is not JsonObject req) throw new FormatException("Invalid request");
 
-        var urlText = Text(req["url"]) ?? "";
-        if (!Uri.TryCreate(urlText, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
-            throw new UriFormatException(urlText.Length == 0 ? "adresse vide" : urlText);
+        // The address is never put in the message: it may hold a password (ftp://user:pass@nas) and the message ends up in the diagnostics.
+        if (!Uri.TryCreate(Text(req["url"]), UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            throw new UriFormatException();
 
         var method = (Text(req["method"]) ?? "GET").ToUpperInvariant();
         if (!Methods.Contains(method)) throw new NotSupportedException("Invalid HTTP method: " + method);
@@ -143,6 +144,12 @@ public sealed class NativeHttp : IDisposable
     private static async Task<string> ReadBodyAsync(HttpResponseMessage response, CancellationTokenSource timeout, TimeSpan readTimeout)
     {
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+        return await ReadTextAsync(stream, timeout, readTimeout).ConfigureAwait(false);
+    }
+
+    /// <summary>Reads the stream to its end (each read must not stay silent longer than <paramref name="readTimeout"/>) and decodes it as UTF-8.</summary>
+    internal static async Task<string> ReadTextAsync(Stream stream, CancellationTokenSource timeout, TimeSpan readTimeout)
+    {
         using var body = new ChunkedBody();
         while (true)
         {
@@ -167,7 +174,7 @@ public sealed class NativeHttp : IDisposable
             switch (e)
             {
                 case UriFormatException:
-                    return "Adresse invalide : " + e.Message;
+                    return InvalidAddress;
                 case TimeoutException:
                 case SocketException { SocketErrorCode: SocketError.TimedOut }:
                     return "Réseau : délai dépassé";

@@ -1,10 +1,15 @@
 namespace Arr411.Desktop.Web;
 
-/// <summary>Covers the C411 tab when the site cannot be reached (usually: no VPN) and offers to try again.</summary>
+/// <summary>
+/// Covers the C411 tab when the site cannot be reached (usually: no VPN), or when the page stopped too many times to be loaded again by itself,
+/// and offers to try again.
+/// </summary>
 internal sealed class OfflinePanel : Panel
 {
     public const string Message = "Impossible de joindre C411.\r\nVérifie ta connexion et que le VPN est activé.";
     public const string RetryText = "Réessayer";
+    public const string CrashedMessage = "Cette page s'est arrêtée plusieurs fois de suite.\r\nElle n'est plus rechargée automatiquement.";
+    public const string ReloadText = "Recharger";
 
     private const int MessageWidth = 520;
     private const int MessageHeight = 64;
@@ -41,6 +46,15 @@ internal sealed class OfflinePanel : Panel
     }
 
     public event EventHandler? RetryRequested;
+
+    /// <summary>Shows the panel with a message and the text of its button (the user's click raises <see cref="RetryRequested"/> either way).</summary>
+    public void Present(string message, string action)
+    {
+        _message.Text = message;
+        _retry.Text = action;
+        Visible = true;
+        PerformLayout();
+    }
 
     protected override void OnLayout(LayoutEventArgs levent)
     {

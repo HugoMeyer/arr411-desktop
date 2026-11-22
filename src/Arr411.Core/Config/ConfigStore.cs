@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -27,6 +28,9 @@ public sealed class ConfigChangedEventArgs : EventArgs
 /// </summary>
 public sealed class ConfigStore : IConfigReader
 {
+    // The copies of an unreadable settings file that are kept besides the newest one (config.dat.bad).
+    private const int KeptUnreadable = 3;
+
     private readonly string _path;
     private readonly IDataProtector _protector;
     private readonly object _gate = new();
@@ -114,39 +118,84 @@ public sealed class ConfigStore : IConfigReader
     {
         if (!File.Exists(_path)) return new JsonObject();
 
-        var data = TryRead(_path);
+        var data = TryRead(_path, out var failure);
         if (data is not null) return data;
 
-        data = TryRead(_path + ".bak");
+        data = TryRead(_path + ".bak", out _);
         if (data is not null)
         {
-            Log.Warn("Settings restored from the backup copy");
+            Log.Warn($"Settings file unreadable ({failure}): restored from the backup copy");
             return data;
         }
 
-        Log.Warn("Settings could not be read: starting empty (the old file is kept as config.dat.bad)");
-        try
-        {
-            File.Move(_path, _path + ".bad", overwrite: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // Left in place: the next save replaces it.
-        }
-
+        Log.Warn($"Settings could not be read ({failure}) and there is no usable backup copy: starting empty. {SetAside()}");
         return new JsonObject();
     }
 
-    private JsonObject? TryRead(string file)
+    // The unreadable file may be all that is left of a setup that cannot be opened for now (another Windows account, a profile being repaired): it is
+    // kept as .bad, and the one kept before it gets the time it was written in its name. Only the newest few stay.
+    private string SetAside()
     {
+        var bad = _path + ".bad";
+        try
+        {
+            if (File.Exists(bad))
+            {
+                var written = File.GetLastWriteTimeUtc(bad).ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+                File.Move(bad, FreeName($"{_path}.{written}"));
+            }
+
+            File.Move(_path, bad);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return "It could not be set aside: the next save replaces it.";
+        }
+
+        DeleteOldestUnreadable();
+        return $"The unreadable file is kept as {Path.GetFileName(bad)}.";
+    }
+
+    private static string FreeName(string stem)
+    {
+        var name = stem + ".bad";
+        for (var n = 2; File.Exists(name); n++) name = $"{stem}-{n}.bad";
+        return name;
+    }
+
+    private void DeleteOldestUnreadable()
+    {
+        try
+        {
+            var full = Path.GetFullPath(_path);
+            var older = Directory.EnumerateFiles(Path.GetDirectoryName(full)!, Path.GetFileName(full) + ".*.bad")
+                .Where(file => file.EndsWith(".bad", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(file => file, StringComparer.Ordinal)
+                .Skip(KeptUnreadable)
+                .ToList();
+            foreach (var file in older) File.Delete(file);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Some old copies more stay: not worth more than that.
+        }
+    }
+
+    private JsonObject? TryRead(string file, out string failure)
+    {
+        failure = "missing";
         try
         {
             if (!File.Exists(file)) return null;
             var plain = _protector.Unprotect(File.ReadAllBytes(file));
-            return JsonNode.Parse(plain) as JsonObject;
+            if (JsonNode.Parse(plain) is JsonObject data) return data;
+
+            failure = "not a settings object";
+            return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or JsonException or ArgumentException)
         {
+            failure = ex.GetType().Name;
             return null;
         }
     }

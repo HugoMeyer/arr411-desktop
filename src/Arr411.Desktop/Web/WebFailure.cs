@@ -7,6 +7,8 @@ namespace Arr411.Desktop.Web;
 /// <summary>What the log says when a process of the browser behind the web views stops.</summary>
 internal static class WebFailure
 {
+    private const long UnresponsiveLineGapMilliseconds = 60_000;
+
     public static string Describe(CoreWebView2ProcessFailedEventArgs e)
     {
         var text = new StringBuilder();
@@ -43,5 +45,20 @@ internal static class WebFailure
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Whether a failure is worth a line of the log. A page that does not answer is reported again every few seconds for as long as it
+    /// stays so: one line a minute is enough. <paramref name="lastLine"/> is when the last one was written (0 before the first).
+    /// </summary>
+    public static bool IsWorthALine(CoreWebView2ProcessFailedKind kind, ref long lastLine)
+    {
+        if (kind != CoreWebView2ProcessFailedKind.RenderProcessUnresponsive) return true;
+
+        var now = Environment.TickCount64;
+        if (lastLine != 0 && now - lastLine < UnresponsiveLineGapMilliseconds) return false;
+
+        lastLine = now;
+        return true;
     }
 }

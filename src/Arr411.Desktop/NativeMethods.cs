@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Arr411.Core.Bridge;
 
 namespace Arr411.Desktop;
 
@@ -9,6 +10,7 @@ internal static class NativeMethods
     private const uint ShcnfIdList = 0;
     private const int AsfwAny = -1;
     private const int SwRestore = 9;
+    private const uint GaRoot = 2;
     private const int DwmUseImmersiveDarkModeBefore20H1 = 19;
     private const int DwmUseImmersiveDarkMode = 20;
     private const int DwmBorderColor = 34;
@@ -26,6 +28,36 @@ internal static class NativeMethods
 
     /// <summary>Brings a minimised window back as it was before (maximised or not).</summary>
     public static void Restore(IntPtr window) => _ = ShowWindow(window, SwRestore);
+
+    /// <summary>The window in front belongs to this process (not to another program, and not to the desktop).</summary>
+    public static bool IsForegroundWindowOurs()
+    {
+        var foreground = GetForegroundWindow();
+        return foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var process) != 0 && process == (uint)Environment.ProcessId;
+    }
+
+    /// <summary>
+    /// How long ago the user last touched the keyboard or the mouse, anywhere in the session; false when Windows does not say. The clock is
+    /// read after the input is, so that the input cannot seem to come from the future.
+    /// </summary>
+    public static bool TryGetLastInputAge(out TimeSpan age)
+    {
+        age = TimeSpan.MaxValue;
+        var info = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
+        if (!GetLastInputInfo(ref info)) return false;
+
+        age = UserInput.Age(info.Time, unchecked((uint)Environment.TickCount));
+        return true;
+    }
+
+    /// <summary>The top-level window under the mouse pointer (the window of the app when the pointer is over a web view of its own), or zero.</summary>
+    public static IntPtr TopLevelWindowUnderPointer()
+    {
+        if (!GetCursorPos(out var point)) return IntPtr.Zero;
+
+        var window = WindowFromPoint(point);
+        return window == IntPtr.Zero ? IntPtr.Zero : GetAncestor(window, GaRoot);
+    }
 
     /// <summary>
     /// Gives the title bar of a window the colours of the app instead of those of the system theme: a light bar above a dark app looks stuck on.
@@ -71,4 +103,37 @@ internal static class NativeMethods
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShowWindow(IntPtr window, int command);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetLastInputInfo(ref LastInputInfo info);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out Point point);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern IntPtr WindowFromPoint(Point point);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern IntPtr GetAncestor(IntPtr window, uint flags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LastInputInfo
+    {
+        public uint Size;
+        public uint Time;
+    }
 }

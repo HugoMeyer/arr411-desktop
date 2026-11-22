@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using Arr411.Core.Config;
+using Arr411.Core.Logging;
 using Arr411.Core.Shell;
 
 namespace Arr411.Core.Tests;
@@ -191,6 +192,88 @@ public class ConfigStoreTests
 
         var reopened = Open(dir);
         for (var i = 0; i < 40; i++) Assert.Contains($"\"k{i}\":{i}", reopened.ToJson());
+    }
+}
+
+// The log is one static file for the whole process: these tests run alone (see LogTests).
+[Collection("Log")]
+public sealed class UnreadableSettingsTests : IDisposable
+{
+    private readonly TempDir _dir = new();
+
+    public void Dispose()
+    {
+        Log.Initialize(null);
+        _dir.Dispose();
+    }
+
+    // Opens the store on a file that this protector cannot read, as the file of another Windows account would be.
+    private void OpenUnreadable(string text, DateTime written)
+    {
+        File.WriteAllText(_dir.File("config.dat"), text);
+        File.SetLastWriteTimeUtc(_dir.File("config.dat"), written);
+        Assert.Equal("{}", new ConfigStore(_dir.File("config.dat"), new ReversibleProtector()).ToJson());
+    }
+
+    [Fact]
+    public void An_unreadable_file_does_not_replace_the_one_set_aside_before_it()
+    {
+        OpenUnreadable("first", new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc));
+        OpenUnreadable("second", new DateTime(2026, 2, 3, 4, 5, 6, DateTimeKind.Utc));
+
+        Assert.Equal("second", File.ReadAllText(_dir.File("config.dat.bad")));
+        Assert.Equal("first", File.ReadAllText(_dir.File("config.dat.20260102-030405.bad")));
+        Assert.False(File.Exists(_dir.File("config.dat")));
+    }
+
+    [Fact]
+    public void Two_files_written_at_the_same_time_are_both_kept()
+    {
+        var written = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        OpenUnreadable("first", written);
+        OpenUnreadable("second", written);
+        OpenUnreadable("third", written);
+
+        var kept = Directory.GetFiles(_dir.Root, "config.dat*").Select(file => File.ReadAllText(file)).Order().ToArray();
+        Assert.Equal(["first", "second", "third"], kept);
+    }
+
+    [Fact]
+    public void Only_the_newest_unreadable_files_are_kept()
+    {
+        for (var day = 1; day <= 7; day++) OpenUnreadable($"copy {day}", new DateTime(2026, 3, day, 12, 0, 0, DateTimeKind.Utc));
+
+        var kept = Directory.GetFiles(_dir.Root, "config.dat*").Select(file => File.ReadAllText(file)).Order().ToArray();
+        Assert.Equal(["copy 4", "copy 5", "copy 6", "copy 7"], kept);
+        Assert.Equal("copy 7", File.ReadAllText(_dir.File("config.dat.bad")));
+    }
+
+    [Fact]
+    public void The_log_says_why_the_settings_are_empty_and_where_the_old_file_is()
+    {
+        var log = _dir.File(@"logs\arr411.log");
+        Log.Initialize(log);
+
+        OpenUnreadable("garbage", DateTime.UtcNow);
+
+        Assert.Contains(
+            "WARN  Settings could not be read (CryptographicException) and there is no usable backup copy: starting empty. The unreadable file is kept as config.dat.bad.",
+            File.ReadAllText(log));
+    }
+
+    [Fact]
+    public void The_log_says_when_the_backup_copy_was_used()
+    {
+        var store = new ConfigStore(_dir.File("config.dat"), new ReversibleProtector());
+        store.Merge("""{"a":1}""", "test");
+        store.Merge("""{"a":2}""", "test");
+        var log = _dir.File(@"logs\arr411.log");
+        Log.Initialize(log);
+        File.WriteAllText(_dir.File("config.dat"), "garbage");
+
+        Assert.Equal("""{"a":1}""", new ConfigStore(_dir.File("config.dat"), new ReversibleProtector()).ToJson());
+
+        Assert.Contains("WARN  Settings file unreadable (CryptographicException): restored from the backup copy", File.ReadAllText(log));
     }
 }
 

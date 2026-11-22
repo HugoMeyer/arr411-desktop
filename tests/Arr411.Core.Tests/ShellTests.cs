@@ -255,4 +255,67 @@ public class ExternalLinksTests
     {
         Assert.Null(ExternalLinks.C411Page(url));
     }
+
+    [Theory]
+    [InlineData("https://elsewhere.invalid/outside", "https://elsewhere.invalid/outside")]
+    [InlineData("  http://Example.com/a b?q=1  ", "http://example.com/a%20b?q=1")]
+    [InlineData("https://example.org", "https://example.org/")]
+    [InlineData("ms-settings:defaultapps?registeredAppUser=Arr411", "ms-settings:defaultapps?registeredAppUser=Arr411")]
+    public void What_Windows_is_asked_to_open_is_the_address_as_the_framework_writes_it(string url, string expected)
+    {
+        Assert.Equal(expected, ExternalLinks.ShellTarget(url));
+    }
+
+    [Theory]
+    [InlineData("calc.exe")]
+    [InlineData(@"C:\Windows\System32\calc.exe")]
+    [InlineData("file:///C:/Windows/System32/calc.exe")]
+    [InlineData("ms-msdt:/id PCWDiagnostic")]
+    [InlineData("magnet:?xt=urn:btih:abc")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("ftp://example.com/")]
+    [InlineData("not a url")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void Anything_else_is_never_handed_to_Windows(string? url)
+    {
+        Assert.Null(ExternalLinks.ShellTarget(url));
+    }
+
+    [Theory]
+    [InlineData("https://c411.org/torrents/1", "https://c411.org/")]
+    [InlineData("https://c411.org/", "https://c411.org/torrents?q=x#top")]
+    [InlineData("HTTPS://C411.ORG/a", "https://c411.org/b")]
+    [InlineData("https://www.c411.org/a", "https://www.c411.org/b")]
+    [InlineData("  https://c411.org/a  ", "https://c411.org/b")]
+    public void A_message_of_the_page_on_screen_is_accepted(string source, string shown)
+    {
+        Assert.True(ExternalLinks.IsMessageFromShownPage(source, shown));
+    }
+
+    [Theory]
+    [InlineData("https://www.c411.org/", "https://c411.org/")]
+    [InlineData("https://c411.org/", "https://www.c411.org/")]
+    [InlineData("https://ads.c411.org/", "https://c411.org/")]
+    [InlineData("https://evil.example/", "https://c411.org/")]
+    [InlineData("https://c411.org.evil.example/", "https://c411.org/")]
+    [InlineData("https://c411.org@evil.example/", "https://c411.org/")]
+    [InlineData("http://c411.org/", "http://c411.org/")]
+    [InlineData("http://c411.org/", "https://c411.org/")]
+    [InlineData("https://c411.org/", "http://c411.org/")]
+    [InlineData("https://c411.org:8443/", "https://c411.org/")]
+    [InlineData("https://user@c411.org/", "https://c411.org/")]
+    [InlineData("https://c411.org/", "about:blank")]
+    [InlineData("https://c411.org/", "https://evil.example/")]
+    [InlineData("about:blank", "about:blank")]
+    [InlineData("null", "https://c411.org/")]
+    [InlineData("", "https://c411.org/")]
+    [InlineData("https://c411.org/", "")]
+    [InlineData("https://c411.org/", null)]
+    [InlineData(null, "https://c411.org/")]
+    [InlineData(null, null)]
+    public void A_message_of_anyone_else_is_refused(string? source, string? shown)
+    {
+        Assert.False(ExternalLinks.IsMessageFromShownPage(source, shown));
+    }
 }

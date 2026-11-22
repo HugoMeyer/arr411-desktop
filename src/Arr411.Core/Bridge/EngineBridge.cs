@@ -18,15 +18,31 @@ public sealed class EngineBridge : IEngineClient, IDisposable
     /// <summary>Origin tag of the settings the engine saves, so that they are not sent back to it.</summary>
     public const string Origin = "engine";
 
+    /// <summary>
+    /// How many requests may wait for the engine, or be with it, at once. The next one fails at once: a page that asks faster than the engine
+    /// answers (or an engine that no longer answers) must not make them pile up.
+    /// </summary>
+    public const int MaxPendingCalls = 64;
+
+    /// <summary>
+    /// How long a request waits for its answer. Generous on purpose: the answer to a torrent upload comes once the engine has chained its requests
+    /// to the servers (log in, add, check), and each of them may stay silent as long as <see cref="NativeHttp.DefaultReadTimeout"/>.
+    /// </summary>
+    public static readonly TimeSpan DefaultCallTimeout = TimeSpan.FromSeconds(180);
+
     // Same wording as the Android app.
     private static readonly string RestartedReply = ErrorReply("Le moteur de l'app a redémarré, réessaie.");
     private static readonly string StoppedReply = ErrorReply("Le moteur de l'app est arrêté.");
     private static readonly string InvalidReply = ErrorReply("Réponse invalide du moteur.");
+    private static readonly string OverloadedReply = ErrorReply("Le moteur de l'app est surchargé, réessaie.");
+    private static readonly string TimedOutReply = ErrorReply("Le moteur de l'app ne répond pas, réessaie.");
+    private static readonly string GivenUpReply = ErrorReply("Le moteur de l'app s'est arrêté plusieurs fois de suite : relance Arr411.");
 
     private readonly ConfigStore _config;
     private readonly NativeHttp _http;
     private readonly IEngineShell _shell;
     private readonly Action<string> _post;
+    private readonly TimeSpan _callTimeout;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly object _gate = new();
     private readonly List<Call> _waiting = [];
@@ -34,15 +50,18 @@ public sealed class EngineBridge : IEngineClient, IDisposable
     private int _epoch;
     private long _lastCallId;
     private bool _ready;
+    private bool _givenUp;
     private volatile bool _disposed;
 
     /// <param name="post">Sends a JSON message to the engine page. Must be callable from any thread.</param>
-    public EngineBridge(ConfigStore config, NativeHttp http, IEngineShell shell, Action<string> post)
+    /// <param name="callTimeout">Replaces <see cref="DefaultCallTimeout"/>.</param>
+    public EngineBridge(ConfigStore config, NativeHttp http, IEngineShell shell, Action<string> post, TimeSpan? callTimeout = null)
     {
         _config = config;
         _http = http;
         _shell = shell;
         _post = post;
+        _callTimeout = callTimeout ?? DefaultCallTimeout;
         _config.Changed += OnConfigChanged;
     }
 
@@ -63,6 +82,7 @@ public sealed class EngineBridge : IEngineClient, IDisposable
     /// </summary>
     public string BuildState()
     {
+        lock (_gate) _givenUp = false;
         PageLost();
         return JsonText.Stringify(new JsonObject { ["config"] = _config.ToJson() });
     }
@@ -85,6 +105,22 @@ public sealed class EngineBridge : IEngineClient, IDisposable
         foreach (var call in lost) call.Completion.TrySetResult(RestartedReply);
     }
 
+    /// <summary>
+    /// The engine page stopped too often to be loaded again, and nothing in the window brings a hidden page back: the requests that wait for it
+    /// fail now, and so do the next ones, until a page boots again (see <see cref="BuildState"/>), instead of each one waiting for its timeout.
+    /// </summary>
+    public void GiveUp()
+    {
+        lock (_gate)
+        {
+            _givenUp = true;
+            _ready = false;
+            Interlocked.Increment(ref _epoch);
+        }
+
+        CompleteAll(GivenUpReply);
+    }
+
     /// <summary>A message posted by the engine page.</summary>
     public void OnMessage(string json)
     {
@@ -104,7 +140,8 @@ public sealed class EngineBridge : IEngineClient, IDisposable
 
     /// <summary>
     /// Hands a message (what the extension's pages send to its background script, as JSON text) to the engine and returns its answer
-    /// (JSON text too). Waits for the engine to be up. When the engine goes away the answer is an error object, like on Android.
+    /// (JSON text too). Waits for the engine to be up. When the engine goes away, is too busy or does not answer in time, the answer is an
+    /// error object, like on Android.
     /// </summary>
     public async Task<string> SendAsync(string messageJson, CancellationToken cancellation = default)
     {
@@ -115,6 +152,8 @@ public sealed class EngineBridge : IEngineClient, IDisposable
         lock (_gate)
         {
             if (_disposed) return StoppedReply;
+            if (_givenUp) return GivenUpReply;
+            if (_waiting.Count + _delivered.Count >= MaxPendingCalls) return OverloadedReply;
 
             deliver = _ready;
             if (deliver) _delivered[call.Id] = call;
@@ -123,7 +162,18 @@ public sealed class EngineBridge : IEngineClient, IDisposable
 
         using var registration = cancellation.Register(() => Abandon(call, cancellation));
         if (deliver) PostHandle(call);
-        return await call.Completion.Task.ConfigureAwait(false);
+
+        try
+        {
+            return await call.Completion.Task.WaitAsync(_callTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // The engine may still answer: nobody waits for it, and OnReply ignores what it does not know.
+            Forget(call);
+            Log.Warn("The engine did not answer a request in time");
+            return TimedOutReply;
+        }
     }
 
     private void Dispatch(JsonElement message)
@@ -218,13 +268,17 @@ public sealed class EngineBridge : IEngineClient, IDisposable
 
     private void Abandon(Call call, CancellationToken cancellation)
     {
+        Forget(call);
+        call.Completion.TrySetCanceled(cancellation);
+    }
+
+    private void Forget(Call call)
+    {
         lock (_gate)
         {
             _waiting.Remove(call);
             _delivered.Remove(call.Id);
         }
-
-        call.Completion.TrySetCanceled(cancellation);
     }
 
     private void CompleteAll(string reply)

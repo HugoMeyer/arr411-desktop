@@ -71,6 +71,33 @@ internal sealed class FakePageShell : IPageShell
     }
 }
 
+/// <summary>What Windows says about the user, as the test decides it: the user is there unless the test says otherwise, so that the tests that are not about it need not care.</summary>
+internal sealed class FakeUserPresence : IUserPresence
+{
+    /// <summary>Whether a key or a button was pressed in the window a moment ago.</summary>
+    public bool Gesture { get; set; } = true;
+
+    /// <summary>Whether the pointer is over the window and the user did something a moment ago.</summary>
+    public bool Drop { get; set; } = true;
+
+    /// <summary>The window the bridge asked about the last time, if it did.</summary>
+    public TimeSpan? GestureAskedFor { get; private set; }
+
+    public TimeSpan? DropAskedFor { get; private set; }
+
+    public bool HasRecentGesture(TimeSpan window)
+    {
+        GestureAskedFor = window;
+        return Gesture;
+    }
+
+    public bool HasRecentDrop(TimeSpan window)
+    {
+        DropAskedFor = window;
+        return Drop;
+    }
+}
+
 /// <summary>Collection expressions do not pick an <c>Assert.Equal</c> overload when the other side is an array: these helpers type them.</summary>
 internal static class Expect
 {
@@ -82,6 +109,9 @@ internal static class Expect
 /// <summary>The messages the C411 page posts (see Scripts\page-adapter.js) and how to recognise what the bridge posts back.</summary>
 internal static class PageMessages
 {
+    /// <summary>The infohash of a torrent (40 hexadecimal digits).</summary>
+    public const string Hash = "0123456789abcdef0123456789abcdef01234567";
+
     public static string Send(string? id, JsonObject message) =>
         new JsonObject { ["t"] = "send", ["id"] = id, ["msg"] = message.ToJsonString() }.ToJsonString();
 
@@ -123,7 +153,7 @@ internal sealed class PageHarness : IDisposable
         Network = new StubHandler(network ?? ((_, _) => Task.FromResult(StubHandler.Reply(HttpStatusCode.OK, "data"u8.ToArray()))));
         Fetcher = new PageFetcher(Network);
         Downloads = _dir.File("Downloads");
-        Bridge = new PageBridge(Engine, Shell, Fetcher, Downloads, Collect)
+        Bridge = new PageBridge(Engine, Shell, Presence, Fetcher, Downloads, Collect)
         {
             EngineTimeout = engineTimeout ?? PageBridge.DefaultEngineTimeout,
             OffScreenGrace = offScreenGrace ?? PageBridge.DefaultOffScreenGrace,
@@ -134,6 +164,8 @@ internal sealed class PageHarness : IDisposable
     public FakeEngineClient Engine { get; } = new();
 
     public FakePageShell Shell { get; } = new();
+
+    public FakeUserPresence Presence { get; } = new();
 
     public StubHandler Network { get; }
 
@@ -216,17 +248,18 @@ public sealed class PageBridgeTests : IDisposable
     [InlineData("disarm")]
     [InlineData("upload")]
     [InlineData("arrMeta")]
+    [InlineData("pagePrefs")]
     public async Task The_messages_of_the_list_reach_the_engine_and_its_answer_comes_back(string type)
     {
         _h.Engine.Answer = (_, _) => Task.FromResult("""{"ok":true,"n":1}""");
 
-        _h.Page(PageMessages.Send("a1", new JsonObject { ["type"] = type, ["hash"] = "abc" }));
+        _h.Page(PageMessages.Send("a1", new JsonObject { ["type"] = type, ["hash"] = PageMessages.Hash }));
 
         var reply = await _h.WaitForAsync(PageMessages.Reply("a1"));
         Assert.Equal("""{"ok":true,"n":1}""", (string?)reply["json"]);
         var sent = JsonNode.Parse(Assert.Single(_h.Engine.Sent))!;
         Assert.Equal(type, (string?)sent["type"]);
-        Assert.Equal("abc", (string?)sent["hash"]);
+        Assert.Equal(PageMessages.Hash, (string?)sent["hash"]);
     }
 
     [Theory]
@@ -437,13 +470,11 @@ public sealed class PageBridgeTests : IDisposable
     [Fact]
     public void A_toast_asked_by_the_page_is_shown_and_kept_short()
     {
-        _h.Page("""{"t":"toast","text":"Envoyé à qBittorrent"}""");
-        _h.Page(new JsonObject { ["t"] = "toast", ["text"] = new string('x', 500) }.ToJsonString());
         _h.Page("""{"t":"toast"}""");
         _h.Page("""{"t":"toast","text":5}""");
+        _h.Page(new JsonObject { ["t"] = "toast", ["text"] = new string('x', 500) }.ToJsonString());
 
-        string[] expected = ["Envoyé à qBittorrent", new string('x', 200)];
-        Assert.Equal(expected, _h.Shell.Toasts);
+        Expect.Equal([new string('x', 140)], _h.Shell.Toasts);
     }
 
     [Fact]
@@ -689,12 +720,14 @@ public sealed class PageBridgeTests : IDisposable
         Assert.Empty(_h.Engine.Sent);
     }
 
-    [Fact]
-    public async Task A_page_that_nobody_sees_is_still_served_for_a_while()
+    [Theory]
+    [InlineData("pageStatus")]
+    [InlineData("pagePrefs")]
+    public async Task A_page_that_nobody_sees_is_still_served_for_a_while(string type)
     {
         _h.Bridge.SetOnScreen(false);
 
-        _h.Page(PageMessages.Send("a1", Status()));
+        _h.Page(PageMessages.Send("a1", new JsonObject { ["type"] = type }));
 
         var reply = await _h.WaitForAsync(PageMessages.Reply("a1"));
         Assert.Equal("""{"ok":true}""", (string?)reply["json"]);
@@ -999,7 +1032,7 @@ public sealed class PageBridgeEngineTests : IDisposable
     public PageBridgeEngineTests()
     {
         _fetcher = new PageFetcher(_network);
-        _page = new PageBridge(_engine.Bridge, _shell, _fetcher, _dir.File("Downloads"), Collect);
+        _page = new PageBridge(_engine.Bridge, _shell, new FakeUserPresence(), _fetcher, _dir.File("Downloads"), Collect);
         _engine.Bridge.BuildState();
         _engine.Bridge.OnMessage("""{"t":"ready"}""");
     }

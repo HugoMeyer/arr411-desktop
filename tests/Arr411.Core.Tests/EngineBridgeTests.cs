@@ -42,12 +42,12 @@ internal sealed class EngineHarness : IDisposable
     private readonly NativeHttp _net;
     private readonly List<JsonObject> _posted = [];
 
-    public EngineHarness(Func<RecordedRequest, CancellationToken, Task<HttpResponseMessage>>? network = null)
+    public EngineHarness(Func<RecordedRequest, CancellationToken, Task<HttpResponseMessage>>? network = null, TimeSpan? callTimeout = null)
     {
         Config = new ConfigStore(_dir.File("config.dat"), new ReversibleProtector());
         Network = new StubHandler(network ?? ((_, _) => Task.FromResult(StubHandler.Reply(HttpStatusCode.OK, "Ok."u8.ToArray()))));
         _net = new NativeHttp("UA", Network);
-        Bridge = new EngineBridge(Config, _net, Shell, Collect);
+        Bridge = new EngineBridge(Config, _net, Shell, Collect, callTimeout);
     }
 
     public ConfigStore Config { get; }
@@ -513,5 +513,172 @@ public sealed class EngineBridgeTests : IDisposable
             if (Environment.TickCount64 > deadline) Assert.Fail("The condition was not met in time.");
             await Task.Delay(10);
         }
+    }
+}
+
+public sealed class EngineBridgeLimitsTests : IDisposable
+{
+    private const string GivenUpError = "Le moteur de l'app s'est arrêté plusieurs fois de suite : relance Arr411.";
+    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ShortTimeout = TimeSpan.FromMilliseconds(150);
+
+    private readonly EngineHarness _h = new(callTimeout: ShortTimeout);
+
+    public void Dispose() => _h.Dispose();
+
+    private static async Task<JsonNode> Answer(Task<string> call) => JsonNode.Parse(await call.WaitAsync(Patience))!;
+
+    private static void AssertError(JsonNode reply, string error)
+    {
+        Assert.False((bool)reply["ok"]!);
+        Assert.Equal(error, (string?)reply["error"]);
+    }
+
+    private void Boot() => _h.Bridge.BuildState();
+
+    private void Ready() => _h.Bridge.OnMessage("""{"t":"ready"}""");
+
+    private void Reply(string id, string json) =>
+        _h.Bridge.OnMessage(new JsonObject { ["t"] = "reply", ["id"] = id, ["json"] = json }.ToJsonString());
+
+    [Fact]
+    public async Task Requests_beyond_the_limit_fail_at_once_while_the_engine_is_down()
+    {
+        using var h = new EngineHarness();
+        h.Bridge.BuildState();
+        var calls = Enumerable.Range(0, EngineBridge.MaxPendingCalls).Select(_ => h.Bridge.SendAsync("{}")).ToArray();
+        Assert.All(calls, call => Assert.False(call.IsCompleted));
+
+        var extra = h.Bridge.SendAsync("{}");
+
+        Assert.True(extra.IsCompletedSuccessfully);
+        AssertError(await Answer(extra), "Le moteur de l'app est surchargé, réessaie.");
+        Assert.All(calls, call => Assert.False(call.IsCompleted));
+    }
+
+    [Fact]
+    public async Task Requests_beyond_the_limit_fail_at_once_while_the_engine_is_busy_and_a_slot_is_freed_by_an_answer()
+    {
+        using var h = new EngineHarness();
+        h.Bridge.BuildState();
+        h.Bridge.OnMessage("""{"t":"ready"}""");
+        var calls = Enumerable.Range(0, EngineBridge.MaxPendingCalls).Select(_ => h.Bridge.SendAsync("{}")).ToArray();
+        Assert.Equal(EngineBridge.MaxPendingCalls, h.Handles.Length);
+
+        AssertError(await Answer(h.Bridge.SendAsync("{}")), "Le moteur de l'app est surchargé, réessaie.");
+        Assert.Equal(EngineBridge.MaxPendingCalls, h.Handles.Length);
+
+        h.Bridge.OnMessage(new JsonObject { ["t"] = "reply", ["id"] = (string)h.Handles[0]["id"]!, ["json"] = "\"first\"" }.ToJsonString());
+        Assert.Equal("\"first\"", await calls[0].WaitAsync(Patience));
+
+        var next = h.Bridge.SendAsync("{}");
+        Assert.False(next.IsCompleted);
+        Assert.Equal(EngineBridge.MaxPendingCalls + 1, h.Handles.Length);
+    }
+
+    [Fact]
+    public async Task A_request_the_engine_never_answers_fails_after_the_timeout_and_frees_its_slot()
+    {
+        Boot();
+        Ready();
+        var calls = Enumerable.Range(0, EngineBridge.MaxPendingCalls).Select(_ => _h.Bridge.SendAsync("{}")).ToArray();
+
+        foreach (var call in calls) AssertError(await Answer(call), "Le moteur de l'app ne répond pas, réessaie.");
+
+        var next = _h.Bridge.SendAsync("{}");
+        Assert.False(next.IsCompleted);
+        Assert.Equal(EngineBridge.MaxPendingCalls + 1, _h.Handles.Length);
+    }
+
+    [Fact]
+    public async Task The_answer_that_comes_after_the_timeout_is_ignored()
+    {
+        Boot();
+        Ready();
+        var call = _h.Bridge.SendAsync("{}");
+        var id = (string)_h.Handles.Single()["id"]!;
+
+        AssertError(await Answer(call), "Le moteur de l'app ne répond pas, réessaie.");
+        Reply(id, """{"ok":true}""");
+
+        var next = _h.Bridge.SendAsync("{}");
+        Assert.False(next.IsCompleted);
+        Assert.NotEqual(id, (string)_h.Handles.Last()["id"]!);
+    }
+
+    [Fact]
+    public async Task A_request_that_waits_for_an_engine_that_never_starts_fails_and_is_not_delivered_later()
+    {
+        Boot();
+        var call = _h.Bridge.SendAsync("""{"type":"pageStatus"}""");
+
+        AssertError(await Answer(call), "Le moteur de l'app ne répond pas, réessaie.");
+
+        Ready();
+        Assert.Empty(_h.Handles);
+    }
+
+    [Fact]
+    public async Task A_request_answered_in_time_is_not_touched_by_the_timeout()
+    {
+        Boot();
+        Ready();
+        var call = _h.Bridge.SendAsync("{}");
+
+        Reply((string)_h.Handles.Single()["id"]!, """{"ok":true}""");
+        await Task.Delay(ShortTimeout * 2);
+
+        Assert.Equal("""{"ok":true}""", await call.WaitAsync(Patience));
+    }
+
+    [Fact]
+    public async Task An_engine_given_up_fails_what_waits_for_it_and_what_comes()
+    {
+        using var h = new EngineHarness();
+        h.Bridge.BuildState();
+        var waiting = h.Bridge.SendAsync("{}");
+        Assert.False(waiting.IsCompleted);
+
+        h.Bridge.GiveUp();
+
+        AssertError(await Answer(waiting), GivenUpError);
+        var next = h.Bridge.SendAsync("{}");
+        Assert.True(next.IsCompletedSuccessfully);
+        AssertError(await Answer(next), GivenUpError);
+
+        // A page that says it is ready without having booted is not one that can be served.
+        h.Bridge.OnMessage("""{"t":"ready"}""");
+        AssertError(await Answer(h.Bridge.SendAsync("{}")), GivenUpError);
+        Assert.Empty(h.Handles);
+    }
+
+    [Fact]
+    public async Task A_request_the_engine_was_working_on_fails_at_once_when_it_is_given_up()
+    {
+        using var h = new EngineHarness();
+        h.Bridge.BuildState();
+        h.Bridge.OnMessage("""{"t":"ready"}""");
+        var working = h.Bridge.SendAsync("{}");
+        Assert.Single(h.Handles);
+
+        h.Bridge.GiveUp();
+
+        AssertError(await Answer(working), GivenUpError);
+    }
+
+    [Fact]
+    public async Task A_page_that_boots_again_after_the_engine_was_given_up_is_served()
+    {
+        using var h = new EngineHarness();
+        h.Bridge.BuildState();
+        h.Bridge.GiveUp();
+
+        h.Bridge.BuildState();
+        h.Bridge.OnMessage("""{"t":"ready"}""");
+        var served = h.Bridge.SendAsync("{}");
+        Assert.False(served.IsCompleted);
+        h.Bridge.OnMessage(new JsonObject { ["t"] = "reply", ["id"] = (string)h.Handles.Single()["id"]!, ["json"] = """{"ok":true}""" }.ToJsonString());
+
+        Assert.Equal("""{"ok":true}""", await served.WaitAsync(Patience));
     }
 }

@@ -33,6 +33,31 @@ public sealed class RedactionTests
         Assert.Equal(expected, Clean(text));
     }
 
+    [Theory]
+    [InlineData("https://c411.org/rss?cat=1&passkey=0123456789abcdef0123456789abcdef&n=2", "https://c411.org/rss?cat=1&passkey=***&n=2")]
+    [InlineData("PassKey: 0123456789abcdef0123456789abcdef", "PassKey: ***")]
+    [InlineData("""{"passkey":"0123456789abcdef0123456789abcdef","n":2}""", """{"passkey":***,"n":2}""")]
+    [InlineData("https://c411.org/passkey/0123456789abcdef0123456789abcdef/x.torrent", "https://c411.org/passkey/***/x.torrent")]
+    [InlineData("https://tracker.c411.org/announce/0123456789abcdef0123456789abcdef", "https://tracker.c411.org/announce/***")]
+    [InlineData("https://tracker.c411.org/announce/0123456789ABCDEF0123456789ABCDEF?a=1", "https://tracker.c411.org/announce/***?a=1")]
+    [InlineData("https://tracker.c411.org/0123456789abcdef0123456789abcdef/announce", "https://tracker.c411.org/***/announce")]
+    [InlineData("announce: https://t.c411.org/announce/0123456789abcdef0123456789abcdef and https://t.c411.org/announce?passkey=ab12", "announce: https://t.c411.org/announce/*** and https://t.c411.org/announce?passkey=***")]
+    public void The_passkey_of_the_tracker_is_hidden_wherever_it_is_in_an_address(string text, string expected)
+    {
+        Assert.Equal(expected, Clean(text));
+    }
+
+    [Theory]
+    [InlineData("https://c411.org/torrents/0123456789abcdef0123456789abcdef01234567")]
+    [InlineData("https://tracker.c411.org/announce")]
+    [InlineData("https://tracker.c411.org/announce/")]
+    [InlineData("https://tracker.c411.org/announce/status")]
+    [InlineData("https://tracker.c411.org/0123456789abcdef0123456789abcdef01234567/announce")]
+    public void An_address_without_a_passkey_is_left_as_it_is(string text)
+    {
+        Assert.Equal(text, Clean(text));
+    }
+
     [Fact]
     public void The_profile_folder_and_the_account_name_are_hidden_whatever_the_case_or_the_slashes()
     {

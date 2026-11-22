@@ -41,14 +41,18 @@ internal sealed class ChunkedBody : IDisposable
     /// <summary>The body as UTF-8 text: a character cut between two blocks is put back together, and invalid bytes become U+FFFD.</summary>
     public string Decode()
     {
-        // The block that Free handed out for a read that found the end of the response is empty.
-        var blocks = _lastLength == 0 ? _blocks.Count - 1 : _blocks.Count;
+        // The block that Free handed out for a read that found the end of the response is empty, and the one before it is full: a body that is an exact
+        // multiple of the block size ends with a full block that no byte of the empty one follows.
+        var trailingEmpty = _lastLength == 0;
+        var blocks = trailingEmpty ? _blocks.Count - 1 : _blocks.Count;
         if (blocks == 0) return "";
+
+        var lastBytes = trailingEmpty ? BlockSize : _lastLength;
 
         // One pass to size the text and one to fill it, so that the text is the only big thing allocated: the framework's way of decoding several
         // segments stores the pieces in arrays rented from the shared pool first, which is as much again.
-        var length = Convert(blocks, default);
-        return string.Create(length, (this, blocks), static (to, state) => state.Item1.Convert(state.blocks, to));
+        var length = Convert(blocks, lastBytes, default);
+        return string.Create(length, (this, blocks, lastBytes), static (to, state) => state.Item1.Convert(state.blocks, state.lastBytes, to));
     }
 
     public void Dispose()
@@ -58,7 +62,7 @@ internal sealed class ChunkedBody : IDisposable
     }
 
     /// <summary>Decodes the blocks into <paramref name="to"/>, or only counts the characters when it is empty.</summary>
-    private int Convert(int blocks, Span<char> to)
+    private int Convert(int blocks, int lastBytes, Span<char> to)
     {
         var fill = !to.IsEmpty;
         Span<char> scratch = stackalloc char[ScratchLength];
@@ -67,7 +71,7 @@ internal sealed class ChunkedBody : IDisposable
         for (var i = 0; i < blocks; i++)
         {
             var last = i == blocks - 1;
-            var bytes = _blocks[i].AsSpan(0, last ? _lastLength : BlockSize);
+            var bytes = _blocks[i].AsSpan(0, last ? lastBytes : BlockSize);
             bool completed;
             do
             {

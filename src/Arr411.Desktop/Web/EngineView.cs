@@ -28,4 +28,7 @@ internal sealed class EngineView : LocalWebView
 
     // The requests it was working on fail at once, instead of when the page is back.
     protected override void OnPageLost() => _bridge?.PageLost();
+
+    // Nobody sees this view, so there is nobody to ask: the requests fail at once, with a message that says what to do, instead of each one timing out.
+    protected override void OnReloadStopped() => _bridge?.GiveUp();
 }

@@ -14,7 +14,8 @@ internal static class WebEnvironment
     /// <summary>Debug builds only: the port of a local HTTPS server that stands in for c411.org and its subdomains (the fake site of the end-to-end tests).</summary>
     public const string TestSitePortVariable = "ARR411_TEST_SITE_PORT";
 
-    // The hidden engine page has to keep its timers while the window is minimised or covered by another one.
+    // The hidden engine page has to keep its timers while the window is minimised or covered by another one. The C411 tab gets them too,
+    // since the arguments are shared: C411View puts it to sleep itself once it has been hidden for a minute.
     private const string KeepAliveArguments =
         "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows "
         + "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling";

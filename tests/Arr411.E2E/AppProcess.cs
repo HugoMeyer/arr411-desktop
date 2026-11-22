@@ -145,6 +145,8 @@ public sealed class AppProcess : IAsyncDisposable
             // The tests send in a second what a person sends in a minute, and the tests of a class share one app: with the real window, the
             // limits of the C411 page would run out for the tests that come last.
             ["ARR411_PAGE_RATE_WINDOW"] = "250",
+            // The pages of the tests post their messages by themselves: nobody presses a key for them. The tab still has to be on screen.
+            ["ARR411_PAGE_GESTURE"] = "1",
         };
         if (environment is not null)
         {

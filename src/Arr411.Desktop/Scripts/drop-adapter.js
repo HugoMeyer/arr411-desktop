@@ -12,8 +12,11 @@
   // reading a big file or sending a lot of data.
   var MAX_FILES = 20;
   var MAX_FILE_BYTES = 20 * 1024 * 1024;
-  var MAX_TOTAL_BYTES = 2 * MAX_FILE_BYTES;
   var MAX_TEXT = 64 * 1024 + 1; // one more than the window takes, so that it sees a text that is too long
+  // The window reads no message of the C411 page over 1 Mi characters (PageBridge.MaxMessageChars; base64 makes a file a third bigger): a
+  // .torrent file weighs a few dozen KB, so the page of the site carries less than the web app does.
+  var host = location.hostname;
+  var MAX_TOTAL_BYTES = host === 'c411.org' || host.endsWith('.c411.org') ? 600 * 1024 : 2 * MAX_FILE_BYTES;
 
   // What is worth reporting in a text: a magnet link, a link to C411.
   var LINK = /magnet:|https?:\/\/([a-z0-9-]+\.)*c411\.org\b/i;
