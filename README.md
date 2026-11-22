@@ -16,7 +16,7 @@ Prérequis : Windows 10 ou 11 (64 bits) et le **WebView2 Runtime** de Microsoft,
 
 1. Télécharge [`Arr411.exe`](https://github.com/HugoMeyer/arr411-desktop/releases/latest/download/Arr411.exe) (dernière [release](https://github.com/HugoMeyer/arr411-desktop/releases)), ou construis-le toi-même ([Développement](#développement)).
 2. Mets-le dans un dossier à lui : Windows y retient son emplacement (liens magnet, lancement avec Windows), et Arr411 corrige ces réglages si tu le déplaces.
-3. Lance `Arr411.exe`. Le programme n'est pas signé : si SmartScreen affiche « Windows a protégé votre PC », clique sur **Informations complémentaires** puis **Exécuter quand même**.
+3. Lance `Arr411.exe`. Le programme n'est pas signé : si SmartScreen affiche « Windows a protégé votre PC », clique sur **Informations complémentaires** puis **Exécuter quand même**. Pourquoi, et comment vérifier l'exe ou activer la signature : [docs/SIGNING.md](docs/SIGNING.md).
 
 Au premier lancement, Arr411 s'ouvre sur **Réglages** : renseigne l'adresse (et le mot de passe ou la clé API) de ceux de tes services que tu utilises, les autres peuvent rester vides. Ensuite l'application s'ouvre sur l'onglet que tu as choisi dans les réglages (C411 par défaut).
 
