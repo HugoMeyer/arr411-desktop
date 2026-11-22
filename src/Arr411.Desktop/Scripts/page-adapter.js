@@ -16,20 +16,22 @@
     webview.postMessage(message);
   }
 
+  // The shared shim passes the key of the Android bridge first (it guards that bridge from the page's frames); here it is always ''
+  // and ignored: this object only exists in the top frame of C411.
   var native = {
-    send: function (json, id) {
+    send: function (key, json, id) {
       post({ t: 'send', id: String(id), msg: String(json) });
     },
-    download: function (url, filename) {
+    download: function (key, url, filename) {
       post({ t: 'download', url: String(url), filename: String(filename || '') });
     },
     // Only the Android app needs it (its browser cannot save a blob). Here the browser saves downloads itself, so the page may not
     // write files: there is nothing to send, and the bridge has no such message.
     saveFile: function () {},
-    toast: function (text) {
+    toast: function (key, text) {
       post({ t: 'toast', text: String(text) });
     },
-    fetchBytes: function (url, referer, id) {
+    fetchBytes: function (key, url, referer, id) {
       post({ t: 'fetchBytes', url: String(url), referer: String(referer || ''), id: String(id) });
     }
   };
