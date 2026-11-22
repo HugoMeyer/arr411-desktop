@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      unsigned-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
     steps:
       # build.ps1 looks for arr411-android and arr411-chrome next to this repository.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,6 +92,16 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Task publish
 
+      # SignPath signs a workflow artifact, so the exe is uploaded on its own: no zip (archive: false), and the artifact takes the name of the file. Only for a tag with signing turned on, so that a push to main does not store 50 MB more.
+      - name: Upload the unsigned Arr411.exe for SignPath
+        id: unsigned
+        if: startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: arr411-desktop/dist/publish/Arr411.exe
+          archive: false
+          if-no-files-found: error
+
       # The release ships Arr411.exe itself, not a zip: next to it, its checksum and the licence files the zip used to carry.
       - name: Collect the release files
         working-directory: arr411-desktop
@@ -107,11 +119,82 @@ jobs:
           path: arr411-desktop/dist/release/*
           if-no-files-found: error
 
+  # Optional: only for a tag, and only once the repository variable SIGNPATH_ORGANIZATION_ID is set (see docs/SIGNING.md). Without it this job is skipped and the release is unsigned, as it always was. Once the variable is set, a failure here stops attest and release: a release that had to be signed is never published without its signature.
+  sign:
+    name: Sign Arr411.exe with SignPath
+    if: startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      # The secrets do not reach the if of a job, so a step checks the token: no signing request is made, nor waited for, without it.
+      - name: Check that the SignPath token is set
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN)) {
+            throw 'SIGNPATH_ORGANIZATION_ID is set, so this release must be signed, but the secret SIGNPATH_API_TOKEN is empty. Add the secret (see docs/SIGNING.md), or delete the variable to publish without a signature.'
+          }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Arr411-Desktop-win-x64
+          path: dist/release
+
+      # A person approves the request in SignPath (the Foundation requires it for every release), hence the long wait. A refusal or a timeout fails this step.
+      - name: Submit the signing request to SignPath
+        uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'arr411-desktop' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ needs.build.outputs.unsigned-artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+          skip-decompress: true
+
+      # The signature is checked on the file that is released. SHA256SUMS.txt is written again for it: the updater of the app trusts that file, so it must describe the signed exe, not the unsigned one.
+      - name: Put the signed Arr411.exe in the release files
+        shell: pwsh
+        run: |
+          $signed = @(Get-ChildItem -LiteralPath signed -File)
+          if ($signed.Count -ne 1) { throw "SignPath returned $($signed.Count) files in signed/, expected exactly one" }
+          Copy-Item -LiteralPath $signed[0].FullName -Destination dist/release/Arr411.exe -Force
+
+          $sig = Get-AuthenticodeSignature -LiteralPath dist/release/Arr411.exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignatureType -ne 'Authenticode') {
+            throw "The signature of Arr411.exe is not valid: $($sig.Status), $($sig.SignatureType) ($($sig.StatusMessage))"
+          }
+          "Signer:      $($sig.SignerCertificate.Subject)"
+          "Certificate: valid from $($sig.SignerCertificate.NotBefore.ToString('u')) to $($sig.SignerCertificate.NotAfter.ToString('u'))"
+          if ($sig.TimeStamperCertificate) {
+            "Timestamp:   $($sig.TimeStamperCertificate.Subject)"
+          } else {
+            Write-Host '::warning::The signature of Arr411.exe has no timestamp: it stops being valid when the certificate expires.'
+          }
+
+          $hash = (Get-FileHash dist/release/Arr411.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$PWD/dist/release/SHA256SUMS.txt", "$hash  Arr411.exe`n")
+          Get-Content dist/release/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Arr411-Desktop-win-x64-signed
+          path: dist/release/*
+          if-no-files-found: error
+
   # The attestation is made in its own job: the job that builds never holds the right to sign.
   attest:
     name: Attest the build provenance
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    # sign is skipped when signing is not configured, and a job that needs a skipped job is skipped too unless its condition has a status function. Spelling the results out keeps that: only a sign that failed stops the release.
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') && needs.build.result == 'success' && (needs.sign.result == 'success' || needs.sign.result == 'skipped') }}
+    needs: [build, sign]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -119,9 +202,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # The attestation covers the exe that is published: the signed one when signing ran.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: Arr411-Desktop-win-x64
+          name: ${{ needs.sign.result == 'success' && 'Arr411-Desktop-win-x64-signed' || 'Arr411-Desktop-win-x64' }}
           path: dist/release
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -129,8 +213,9 @@ jobs:
 
   release:
     name: Publish the release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, attest]
+    # The same condition as attest, and the attestation must have been made.
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') && needs.build.result == 'success' && (needs.sign.result == 'success' || needs.sign.result == 'skipped') && needs.attest.result == 'success' }}
+    needs: [build, sign, attest]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -138,18 +223,25 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: Arr411-Desktop-win-x64
+          name: ${{ needs.sign.result == 'success' && 'Arr411-Desktop-win-x64-signed' || 'Arr411-Desktop-win-x64' }}
           path: dist
+      # The notes say that the exe is signed only when the sign job ran, and link to the code signing policy that SignPath requires on a release page.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGN_RESULT: ${{ needs.sign.result }}
         run: |
           ls -l dist
-          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          if [ "$SIGN_RESULT" = success ]; then
+            signature="Le programme est signé : Windows affiche **SignPath Foundation** comme éditeur, ce que tu peux vérifier dans **Propriétés** → **Signatures numériques**. Si SmartScreen affiche tout de même « Windows a protégé votre PC », clique sur **Informations complémentaires** puis **Exécuter quand même**. Les règles de signature sont dans la [Code signing policy](https://github.com/HugoMeyer/arr411-desktop/blob/main/docs/SIGNING.md#code-signing-policy)."
+          else
+            signature="Le programme n'est pas signé : si SmartScreen affiche « Windows a protégé votre PC », clique sur **Informations complémentaires** puis **Exécuter quand même**."
+          fi
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
           Télécharge **Arr411.exe** et lance-le : rien à installer.
 
-          Le programme n'est pas signé : si SmartScreen affiche « Windows a protégé votre PC », clique sur **Informations complémentaires** puis **Exécuter quand même**.
+          $signature
 
-          L'empreinte SHA-256 est dans `SHA256SUMS.txt`, les licences dans `LICENSE` et `THIRD_PARTY_NOTICES.md`.
+          L'empreinte SHA-256 est dans \`SHA256SUMS.txt\`, les licences dans \`LICENSE\` et \`THIRD_PARTY_NOTICES.md\`.
           EOF
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Arr411 Desktop ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
