@@ -59,6 +59,9 @@ public sealed class LaunchRequest
     /// <summary>The request asks for something the user should see.</summary>
     public bool HasWork => HasTorrents || C411Url is not null || Tab is not null;
 
+    /// <summary>The window comes to the front for it: always, except for a start in the background (with Windows) that has nothing to show.</summary>
+    public bool ShowsWindow => !Background || HasWork;
+
     /// <summary>
     /// What a text handed to the window (dropped on it) asks for: its magnet links and its link to a page of c411.org, nothing else.
     /// The text comes from anywhere: none of it is an option, and none of it is a path (a path to a share of another machine would make

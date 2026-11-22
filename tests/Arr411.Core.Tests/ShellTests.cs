@@ -95,6 +95,39 @@ public class TabStateTests
         state.Show(Tabs.Sonarr, true);
         Assert.Equal(Tabs.C411, state.BackTarget());
     }
+
+    [Theory]
+    [InlineData(Tabs.C411, 1, Tabs.Radarr)]
+    [InlineData(Tabs.Sonarr, 1, Tabs.Lidarr)]
+    [InlineData(Tabs.Qbit, 1, Tabs.C411)]
+    [InlineData(Tabs.Sonarr, -1, Tabs.Radarr)]
+    [InlineData(Tabs.C411, -1, Tabs.Qbit)]
+    public void The_neighbours_of_a_tab_follow_the_bar_and_go_round(string from, int step, string expected)
+    {
+        var state = new TabState();
+        state.Show(from, true);
+
+        Assert.Equal(expected, state.Neighbour(step));
+    }
+
+    [Theory]
+    [InlineData(1, Tabs.C411)]
+    [InlineData(-1, Tabs.Qbit)]
+    public void The_settings_page_has_the_ends_of_the_bar_as_neighbours(int step, string expected)
+    {
+        var state = new TabState();
+        state.Show(Tabs.Settings, true);
+
+        Assert.Equal(expected, state.Neighbour(step));
+    }
+
+    [Theory]
+    [InlineData(1, Tabs.C411)]
+    [InlineData(-1, Tabs.Qbit)]
+    public void Before_any_tab_is_shown_the_neighbours_are_the_ends_of_the_bar(int step, string expected)
+    {
+        Assert.Equal(expected, new TabState().Neighbour(step));
+    }
 }
 
 public class StartTabTests

@@ -66,6 +66,31 @@ public static class SingleInstance
         }
     }
 
+    /// <summary>
+    /// What a start does about the instance that may already run: it becomes the instance, or hands its command line over to the one that
+    /// runs, trying again while that one is still starting.
+    /// </summary>
+    /// <param name="beforeHandOver">Called just before the command line is handed over, when another instance runs (the one that gets it has to be allowed to come to the front).</param>
+    /// <returns>The outcome. With <see cref="Admission.Instance"/>, the mutex that makes this start the instance: dispose it when the instance ends.</returns>
+    public static async Task<(Admission Outcome, Mutex? Gate)> AdmitAsync(
+        string name,
+        IReadOnlyList<string> args,
+        string workingDirectory,
+        TimeSpan timeout,
+        Action? beforeHandOver = null,
+        CancellationToken cancellation = default)
+    {
+        var gate = TryAcquire(name);
+        if (gate is not null) return (Admission.Instance, gate);
+
+        beforeHandOver?.Invoke();
+        if (await ForwardAsync(name, args, workingDirectory, timeout, cancellation).ConfigureAwait(false)) return (Admission.HandedOver, null);
+
+        // It may have just left: then this one is the instance.
+        gate = TryAcquire(name);
+        return gate is null ? (Admission.Unreachable, null) : (Admission.Instance, gate);
+    }
+
     /// <summary>Hands the command line of this start to the running instance, trying again while it is still starting.</summary>
     /// <returns>True once the instance took it.</returns>
     public static async Task<bool> ForwardAsync(string name, IReadOnlyList<string> args, string workingDirectory, TimeSpan timeout, CancellationToken cancellation = default)

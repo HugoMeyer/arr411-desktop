@@ -23,6 +23,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (EarlyMode.TryRun(args) is { } early) return early;
+
         var directory = Environment.CurrentDirectory;
         var request = LaunchRequest.Parse(args, directory);
 
@@ -41,24 +43,18 @@ internal static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) => CrashLog.Record("Unhandled exception", UncaughtExceptions.AsException(e.ExceptionObject), e.IsTerminating);
         TaskScheduler.UnobservedTaskException += uncaught.OnUnobservedTask;
 
-        var gate = SingleInstance.TryAcquire(name);
-        if (gate is null)
+        // Another instance may run: it then gets what this launch is for (a magnet link, a file, or just "come to the front").
+        var (admission, gate) = SingleInstance.AdmitAsync(name, args, directory, HandOverTimeout, NativeMethods.AllowAnyProcessToForeground).GetAwaiter().GetResult();
+        if (admission == Admission.HandedOver) return Done;
+
+        if (admission == Admission.Unreachable)
         {
-            // Another instance runs: it gets what this launch is for (a magnet link, a file, or just "come to the front").
-            NativeMethods.AllowAnyProcessToForeground();
-            if (SingleInstance.ForwardAsync(name, args, directory, HandOverTimeout).GetAwaiter().GetResult()) return Done;
-
-            // It may have just left: then this one is the instance.
-            gate = SingleInstance.TryAcquire(name);
-            if (gate is null)
+            if (!request.Background)
             {
-                if (!request.Background)
-                {
-                    MessageBox.Show("Arr411 est déjà lancé mais ne répond pas.", "Arr411", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-
-                return Unreachable;
+                MessageBox.Show("Arr411 est déjà lancé mais ne répond pas.", "Arr411", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+
+            return Unreachable;
         }
 
         // The mutex must stay alive as long as the window does: it is what the other launches look for.

@@ -187,6 +187,15 @@ public class SharePayloadTests
     }
 
     [Fact]
+    public void Magnet_links_are_handed_over_as_text_one_per_line()
+    {
+        var payload = SharePayload.Magnets(["magnet:?xt=urn:btih:a", "magnet:?xt=urn:btih:b"]);
+
+        Assert.Single(payload);
+        Assert.Equal("magnet:?xt=urn:btih:a\nmagnet:?xt=urn:btih:b", payload["text"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Files_are_handed_over_with_their_name_and_content()
     {
         var first = TorrentFile.FromBytes("un.torrent", "d1:ae"u8.ToArray());

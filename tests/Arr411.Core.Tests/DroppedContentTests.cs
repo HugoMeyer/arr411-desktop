@@ -63,6 +63,29 @@ public class DroppedContentTests
         }
     }
 
+    [Fact]
+    public void A_drop_of_nothing_is_answered_that_there_is_nothing_to_add()
+    {
+        Assert.Equal("Rien à ajouter : dépose un lien magnet ou un fichier .torrent.", DroppedContent.Empty.Notice);
+        Assert.Equal(DroppedContent.NothingToAdd, DroppedContent.Parse(Message(" ")).Notice);
+    }
+
+    [Fact]
+    public void A_drop_that_was_taken_is_not_answered()
+    {
+        Assert.Null(DroppedContent.Parse(Message(Magnet)).Notice);
+        Assert.Null(DroppedContent.Parse(Message(null, ("film.torrent", Base64()))).Notice);
+    }
+
+    [Fact]
+    public void A_drop_that_was_partly_refused_is_answered_with_the_first_problem_even_if_something_was_taken()
+    {
+        var content = DroppedContent.Parse(Message(null, ("film.torrent", Base64()), ("b.png", Base64()), ("c.torrent", "%%%")));
+
+        Assert.True(content.HasWork);
+        Assert.Equal("« b.png » n’est pas un fichier .torrent", content.Notice);
+    }
+
     [Theory]
     [InlineData("null")]
     [InlineData("42")]

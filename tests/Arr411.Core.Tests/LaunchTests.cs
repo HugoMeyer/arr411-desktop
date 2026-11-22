@@ -210,6 +210,20 @@ public class LaunchRequestTests
         Assert.False(request.HasWork);
     }
 
+    [Theory]
+    [InlineData(false, new string[0], true)]
+    [InlineData(false, new[] { "magnet:?xt=urn:btih:abc" }, true)]
+    [InlineData(true, new string[0], false)]
+    [InlineData(true, new[] { "magnet:?xt=urn:btih:abc" }, true)]
+    [InlineData(true, new[] { "--tab=qbit" }, true)]
+    [InlineData(true, new[] { "https://c411.org/torrents/1" }, true)]
+    public void The_window_is_shown_unless_a_start_in_the_background_has_nothing_to_show(bool background, string[] arguments, bool shown)
+    {
+        var request = Parse([.. background ? new[] { "--background" } : [], .. arguments]);
+
+        Assert.Equal(shown, request.ShowsWindow);
+    }
+
     [Fact]
     public void The_other_options_are_recognised()
     {

@@ -659,6 +659,49 @@ public sealed class SpaBridgeTests : IDisposable
     }
 
     [Fact]
+    public void A_message_of_the_window_reaches_the_web_app_as_it_is()
+    {
+        _h.Bridge.Push(new JsonObject { ["t"] = "update", ["version"] = "9.9.9", ["note"] = "été" });
+
+        var posted = Assert.Single(_h.Posted);
+        Assert.Equal("update", (string?)posted["t"]);
+        Assert.Equal("9.9.9", (string?)posted["version"]);
+        Assert.Equal("été", (string?)posted["note"]);
+    }
+
+    [Fact]
+    public async Task A_message_of_the_window_can_be_pushed_from_any_thread()
+    {
+        await Task.WhenAll(Enumerable.Range(0, 20).Select(i => Task.Run(() => _h.Bridge.Push(new JsonObject { ["t"] = "tick", ["n"] = i }))));
+
+        Assert.Equal(20, _h.Posted.Length);
+        Assert.Equal(Enumerable.Range(0, 20), _h.Posted.Select(p => (int)p["n"]!).Order());
+    }
+
+    [Theory]
+    [InlineData("""{}""")]
+    [InlineData("""{"t":""}""")]
+    [InlineData("""{"t":5}""")]
+    [InlineData("""{"t":null}""")]
+    [InlineData("""{"t":["update"]}""")]
+    public void A_message_of_the_window_has_to_name_its_type(string json)
+    {
+        Assert.Throws<ArgumentException>(() => _h.Bridge.Push(JsonNode.Parse(json)!.AsObject()));
+
+        Assert.Empty(_h.Posted);
+    }
+
+    [Fact]
+    public void A_disposed_bridge_pushes_nothing()
+    {
+        _h.Bridge.Dispose();
+
+        _h.Bridge.Push(new JsonObject { ["t"] = "update" });
+
+        Assert.Empty(_h.Posted);
+    }
+
+    [Fact]
     public void Dispose_can_be_called_more_than_once()
     {
         _h.Bridge.Dispose();

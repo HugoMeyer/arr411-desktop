@@ -115,6 +115,23 @@ public sealed class SpaBridge : IDisposable
     /// <summary>The settings were changed outside the web app: it reads them again.</summary>
     public void ReloadConfig() => Post(new JsonObject { ["t"] = "loadCfg" });
 
+    /// <summary>
+    /// Sends the web app a message of the window's own, <c>{ t: ... }</c>: what a background service has to tell it. Callable from any thread.
+    /// The page handles the types it knows (see Scripts\spa-adapter.js) and ignores the others. Like every message but a share, it is lost
+    /// when the page is not there to take it (starting, reloading).
+    /// </summary>
+    /// <exception cref="ArgumentException">The message has no <c>t</c> naming its type.</exception>
+    public void Push(JsonObject message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (message["t"] is not JsonValue type || !type.TryGetValue<string>(out var name) || name.Length == 0)
+        {
+            throw new ArgumentException("A message to the web app names its type in t.", nameof(message));
+        }
+
+        Post(message);
+    }
+
     /// <summary>Asks the web app to go back one step. False when it has nothing to go back to, or does not answer.</summary>
     public async Task<bool> BackAsync()
     {

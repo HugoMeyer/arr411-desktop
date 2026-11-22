@@ -241,6 +241,71 @@ public class SingleInstanceTests
         Assert.False(Assert.Single(received).HasWork);
     }
 
+    [Fact]
+    public async Task A_start_with_no_instance_running_becomes_the_instance()
+    {
+        var name = NewName();
+        var called = 0;
+
+        var (outcome, gate) = await SingleInstance.AdmitAsync(name, ["magnet:?xt=urn:btih:abc"], "", Generous, () => called++);
+
+        using (gate)
+        {
+            Assert.Equal(Admission.Instance, outcome);
+            Assert.NotNull(gate);
+            Assert.True(SingleInstance.IsRunning(name));
+            Assert.Equal(0, called);
+        }
+    }
+
+    [Fact]
+    public async Task A_start_hands_its_command_line_to_the_instance_that_runs()
+    {
+        var name = NewName();
+        var received = new ConcurrentQueue<LaunchRequest>();
+        using var running = SingleInstance.TryAcquire(name);
+        using var listener = Listen(name, received.Enqueue);
+        var called = 0;
+
+        var (outcome, gate) = await SingleInstance.AdmitAsync(name, ["--tab=qbit"], "", Generous, () => called++);
+
+        Assert.Equal(Admission.HandedOver, outcome);
+        Assert.Null(gate);
+        Assert.Equal(1, called);
+        Assert.Equal("qbit", Assert.Single(received).Tab);
+    }
+
+    [Fact]
+    public async Task A_start_cannot_reach_an_instance_that_does_not_answer()
+    {
+        var name = NewName();
+        using var running = SingleInstance.TryAcquire(name);
+        var called = 0;
+
+        var (outcome, gate) = await SingleInstance.AdmitAsync(name, [], "", TimeSpan.FromMilliseconds(300), () => called++);
+
+        Assert.Equal(Admission.Unreachable, outcome);
+        Assert.Null(gate);
+        Assert.Equal(1, called);
+        Assert.True(SingleInstance.IsRunning(name));
+    }
+
+    [Fact]
+    public async Task A_start_takes_the_place_of_an_instance_that_left_while_it_waited()
+    {
+        var name = NewName();
+        var leaving = SingleInstance.TryAcquire(name);
+
+        var (outcome, gate) = await SingleInstance.AdmitAsync(name, [], "", TimeSpan.FromMilliseconds(300), () => leaving!.Dispose());
+
+        using (gate)
+        {
+            Assert.Equal(Admission.Instance, outcome);
+            Assert.NotNull(gate);
+            Assert.True(SingleInstance.IsRunning(name));
+        }
+    }
+
     [Theory]
     [InlineData("not json at all")]
     [InlineData("[]")]

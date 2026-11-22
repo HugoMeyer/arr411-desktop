@@ -1,24 +1,19 @@
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Security;
 using Arr411.Core.Bridge;
 using Arr411.Core.Diagnostics;
-using Arr411.Core.Files;
-using Arr411.Core.Hosting;
 using Arr411.Core.Logging;
 using Arr411.Core.Shell;
 using Arr411.Desktop.Nav;
-using Arr411.Desktop.Web;
 
 namespace Arr411.Desktop;
 
 /// <summary>
 /// The window. A tab bar on the left; on the right the web app (every tab but C411), which answers its native calls here, or the C411 site
-/// with the scripts that send a torrent to qBittorrent; behind them, the hidden engine that watches the downloads. It also takes what the
-/// outside world hands over (magnet links, .torrent files, another launch of the program, drops) and lives on in the notification area.
+/// with the scripts that send a torrent to qBittorrent; behind them, the hidden engine that watches the downloads. It lives on in the
+/// notification area, and answers the views and the menus through the parts it is made of: <see cref="WebHost"/> (the views and their
+/// bridges), <see cref="LaunchIntake"/> (launches of the program and drops), <see cref="AppMenuActions"/> (what the menus do) and
+/// <see cref="AppNotices"/> (what the background tells the user).
 /// </summary>
-internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IAppMenuHost
+internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IMainWindow
 {
     // Sizes in dp: 1 dp is 1 pixel at 100 % scale.
     private const int DefaultWidth = 1100;
@@ -33,13 +28,12 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     private const string TrayHint = "Arr411 reste actif dans la zone de notification pour suivre vos téléchargements. Clic droit sur l'icône pour le quitter.";
 
     private readonly AppServices _services;
-    private readonly ShellIntegration _shell;
     private readonly TabState _tabs = new();
-    private readonly SpaView _spa = new() { Dock = DockStyle.Fill };
-    private readonly C411View _c411 = new() { Dock = DockStyle.Fill, Visible = false };
-    private readonly EngineView _engine = new();
     private readonly NavBar _nav = new();
-    private readonly SpaBridge _bridge;
+    private readonly WebHost _web;
+    private readonly LaunchIntake _intake;
+    private readonly AppMenuActions _actions;
+    private readonly AppNotices _notices;
     private readonly ContextMenuStrip _appMenu;
     private readonly ContextMenuStrip _trayMenu;
     private readonly ContextMenuStrip _c411Menu;
@@ -56,28 +50,19 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
 
     private readonly System.Windows.Forms.Timer _toastTimer = new() { Interval = 2500 };
 
-    // What reaches the window before it has a handle (the request this very launch comes with) waits here.
-    private readonly object _earlyGate = new();
-    private List<LaunchRequest>? _early = [];
-
-    private EngineBridge? _engineBridge;
-    private PageBridge? _pageBridge;
     private HangWatch? _hangWatch;
     private Font? _toastFont;
     private int _toastFontDpi;
     private bool _foreground;
     private bool _startHidden;
     private bool _webStarted;
-    private long _webStartedAt;
     private bool _exiting;
     private bool _cookiesKept;
     private bool _maximized;
-    private bool _dropAccepted;
 
     public MainForm(AppServices services, LaunchRequest request)
     {
         _services = services;
-        _shell = new ShellIntegration(ShellIntegration.ProgramPath);
         _startHidden = request.Background;
         _foreground = !request.Background;
 
@@ -88,16 +73,17 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         Icon = LoadIcon(null);
         AllowDrop = true;
 
-        _bridge = new SpaBridge(services.Config, services.Http, this, _tabs, _spa.PostToPage, services.Version);
-        if (request.Background) _bridge.SetForeground(false);
+        _web = new WebHost(services, this, _tabs, spaShell: this, engineShell: this, pageShell: this, openExternal: OpenExternal);
+        _intake = new LaunchIntake(this, _web);
+        if (request.Background) _web.Bridge.SetForeground(false);
 
         // The views that fill the window go in front: the control at index 0 docks last and takes what the bar leaves.
         // The engine goes last, so that it stays behind everything.
-        Controls.Add(_spa);
-        Controls.Add(_c411);
+        Controls.Add(_web.Spa);
+        Controls.Add(_web.C411);
         Controls.Add(_toast);
         Controls.Add(_nav);
-        Controls.Add(_engine);
+        Controls.Add(_web.Engine);
         _toastTimer.Tick += (_, _) => HideToast();
         ApplyDpi();
         RestorePlacement();
@@ -105,31 +91,30 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         _nav.TabInvoked += OnTabInvoked;
         _nav.TabAlternate += OnTabAlternate;
         _nav.MenuRequested += ShowAppMenu;
-        _spa.ShortcutHandler = OnShortcut;
-        _c411.ShortcutHandler = OnShortcut;
-        _spa.BrowserLost += OnBrowserLost;
-        _c411.BrowserLost += OnBrowserLost;
-        _engine.BrowserLost += OnBrowserLost;
+        _web.Spa.ShortcutHandler = OnShortcut;
+        _web.C411.ShortcutHandler = OnShortcut;
+        _web.BrowserLost += OnBrowserLost;
 
-        _appMenu = AppMenu.Build(this, tray: false);
-        _trayMenu = AppMenu.Build(this, tray: true);
+        _actions = new AppMenuActions(services, this, _web.Bridge);
+        _appMenu = AppMenu.Build(_actions, tray: false);
+        _trayMenu = AppMenu.Build(_actions, tray: true);
         _c411Menu = AppMenu.BuildC411(
             reload: () =>
             {
-                _c411.Reload();
+                _web.C411.Reload();
                 ShowTab(Tabs.C411, tellSpa: true);
             },
             home: () =>
             {
-                _c411.GoHome();
+                _web.C411.GoHome();
                 ShowTab(Tabs.C411, tellSpa: true);
             },
-            hasLink: () => _c411.CurrentUrl is not null,
+            hasLink: () => _web.C411.CurrentUrl is not null,
             copyLink: () =>
             {
-                if (_c411.CurrentUrl is { } link) ((ISpaShell)this).CopyText(link);
+                if (_web.C411.CurrentUrl is { } link) ((ISpaShell)this).CopyText(link);
             },
-            settings: () => _bridge.Share(SharePayload.Settings()));
+            settings: () => _web.Bridge.Share(SharePayload.Settings()));
 
         _tray = new TrayIcon(LoadIcon(SystemInformation.SmallIconSize) ?? SystemIcons.Application, _trayMenu);
         _tray.Opened += (_, _) => ShowWindow();
@@ -138,6 +123,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
             ShowWindow();
             ShowTab(Tabs.Qbit, tellSpa: true);
         };
+        _notices = new AppNotices(this, _tray, _web.Bridge);
 
         // The web app opens on the tab decided here: it is asked for it while it boots.
         var start = StartTab.Resolve(services.Config, services.Ui.LastTab, request.Tab);
@@ -148,40 +134,41 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     /// Set when the window closed because the browser process behind its views stopped (all of them died with it, and none can be revived in
     /// place): what the program does next. Null when the window closed for any other reason.
     /// </summary>
-    public BrowserLoss? Lost { get; private set; }
+    public BrowserLoss? Lost => _web.Loss;
 
     /// <summary>Hands the window something to do: a launch of the program, from this process or another one. May be called from any thread.</summary>
-    public void Post(LaunchRequest request)
-    {
-        lock (_earlyGate)
-        {
-            if (_early is not null)
-            {
-                _early.Add(request);
-                return;
-            }
-        }
+    public void Post(LaunchRequest request) => _intake.Post(request);
 
-        try
-        {
-            BeginInvoke(() => RunRequest(request));
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
-        {
-            // The window is closing: nobody is left to take it.
-        }
-    }
+    bool IMainWindow.IsClosed => IsDisposed;
+
+    bool IMainWindow.IsLeaving => _exiting || IsDisposed;
+
+    bool IMainWindow.OnScreen => Visible && WindowState != FormWindowState.Minimized;
+
+    IWin32Window? IMainWindow.DialogOwner => Visible ? this : null;
+
+    void IMainWindow.Post(Action action) => BeginInvoke(action);
+
+    void IMainWindow.ShowWindow() => ShowWindow();
+
+    void IMainWindow.Quit() => Quit();
+
+    void IMainWindow.ShowTab(string tab, bool tellSpa) => ShowTab(tab, tellSpa);
+
+    void IMainWindow.Toast(string text) => ShowToast(text);
+
+    void IMainWindow.Hint(string text) => _tray.Hint(text);
 
     void ISpaShell.SelectTab(string tab) => ShowTab(tab, tellSpa: false);
 
     void ISpaShell.OpenC411(string url)
     {
         // First the page, then the tab: the tab would otherwise load the home page for nothing.
-        _c411.Navigate(url);
+        _web.C411.Navigate(url);
         ShowTab(Tabs.C411, tellSpa: false);
     }
 
-    void ISpaShell.ReloadC411() => _c411.Reload();
+    void ISpaShell.ReloadC411() => _web.C411.Reload();
 
     void ISpaShell.OpenExternal(string url) => OpenExternal(url);
 
@@ -193,172 +180,23 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         _tray.SetActive(count);
     }
 
-    void ISpaShell.CopyText(string text) => CopyToClipboard(text);
+    void ISpaShell.CopyText(string text) => TextClipboard.Copy(text);
 
-    // False when nothing was copied (another program holds the clipboard open): whoever asked for the copy says so instead of looking done.
-    private static bool CopyToClipboard(string text)
-    {
-#if DEBUG
-        // Debug builds only, for the end-to-end tests, which must not overwrite what the user has copied: a file instead of the clipboard.
-        if (Environment.GetEnvironmentVariable("ARR411_CLIPBOARD_SINK") is { Length: > 0 } sink)
-        {
-            try
-            {
-                File.WriteAllText(sink, text);
-                return true;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                Log.Warn("Clipboard sink not written: " + ex.Message);
-                return false;
-            }
-        }
-#endif
-        try
-        {
-            Clipboard.SetDataObject(text, copy: true, retryTimes: 5, retryDelay: 100);
-            return true;
-        }
-        catch (ExternalException ex)
-        {
-            Log.Warn("Clipboard unavailable: " + ex.Message);
-            return false;
-        }
-    }
+    void ISpaShell.Dropped(DroppedContent content) => _intake.DroppedOnApp(content);
 
-    void ISpaShell.Dropped(DroppedContent content) => OnDropped(content);
-
-    void IEngineShell.Notify(string title, string text) => _tray.Notify(title, text);
+    void IEngineShell.Notify(string title, string text) => _notices.Balloon(title, text);
 
     void IEngineShell.OpenExternal(string url) => OpenExternal(url);
 
-    void IEngineShell.Emit(string json) => _pageBridge?.Emit(json);
+    void IEngineShell.Emit(string json) => _web.Emit(json);
 
-    string IPageShell.UserAgent => _c411.UserAgent;
+    string IPageShell.UserAgent => _web.C411.UserAgent;
 
     void IPageShell.Toast(string text) => ShowToast(text);
 
-    Task<string?> IPageShell.CookieHeaderAsync(Uri url) => _c411.CookieHeaderAsync(url);
+    Task<string?> IPageShell.CookieHeaderAsync(Uri url) => _web.C411.CookieHeaderAsync(url);
 
-    void IPageShell.Dropped(DroppedContent content) => OnPageDropped(content);
-
-    void IAppMenuHost.OpenWindow() => ShowWindow();
-
-    void IAppMenuHost.OpenSettings()
-    {
-        ShowWindow();
-        _bridge.Share(SharePayload.Settings());
-    }
-
-    void IAppMenuHost.Associate()
-    {
-        try
-        {
-            _shell.Register();
-        }
-        catch (Exception ex) when (IsRegistryFailure(ex))
-        {
-            Log.Warn("Registration failed: " + ex.GetType().Name);
-            Fail("Arr411 n'a pas pu s'enregistrer pour les liens magnet et les fichiers .torrent.");
-            return;
-        }
-
-        // Windows decides by itself what opens a link: the user has to pick Arr411 in its settings.
-        ShellIntegration.OpenDefaultAppsSettings();
-        if (Visible) ShowToast("Arr411 est enregistré : choisissez-le dans les réglages de Windows.");
-    }
-
-    bool IAppMenuHost.StartWithWindows
-    {
-        get => _shell.StartsWithWindows;
-        set
-        {
-            try
-            {
-                _shell.SetStartWithWindows(value);
-            }
-            catch (Exception ex) when (IsRegistryFailure(ex))
-            {
-                Log.Warn("Start with Windows failed: " + ex.GetType().Name);
-                Fail("Impossible de modifier le démarrage avec Windows.");
-            }
-        }
-    }
-
-    bool IAppMenuHost.CloseToTray
-    {
-        get => _services.Ui.CloseToTray;
-        set => _services.Ui.CloseToTray = value;
-    }
-
-    void IAppMenuHost.OpenLogs() => OpenLogsFolder();
-
-    private void OpenLogsFolder()
-    {
-        try
-        {
-            var folder = Path.GetDirectoryName(_services.Paths.LogFile) ?? _services.Paths.Root;
-            Directory.CreateDirectory(folder);
-            var explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
-            var start = new ProcessStartInfo(explorer) { UseShellExecute = false };
-            start.ArgumentList.Add(folder);
-            using var process = Process.Start(start);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
-        {
-            Log.Warn("The logs folder could not be opened: " + ex.GetType().Name);
-        }
-    }
-
-    void IAppMenuHost.CopyDiagnostics() => _ = CopyDiagnosticsAsync();
-
-    // Reading the files and asking Windows for its events can take seconds: the report is made away from the window, which keeps answering.
-    private async Task CopyDiagnosticsAsync()
-    {
-        try
-        {
-            var (report, saved) = await Task.Run(() =>
-            {
-                var text = _services.BuildDiagnosticReport();
-                return (text, _services.SaveDiagnosticReport(text));
-            });
-            if (IsDisposed) return;
-
-            if (CopyToClipboard(report))
-            {
-                Log.Info("The diagnostic report was copied to the clipboard");
-                Tell("Rapport de diagnostic copié : colle-le dans un message.");
-                return;
-            }
-
-            Log.Warn("The diagnostic report could not be copied to the clipboard");
-            if (saved)
-            {
-                Fail("Le presse-papiers est indisponible : le rapport est dans le fichier diagnostic.txt du dossier des journaux.");
-                OpenLogsFolder();
-            }
-            else
-            {
-                Fail("Impossible de copier le rapport de diagnostic.");
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Error("The diagnostic report could not be made", ex);
-            if (!IsDisposed) Fail("Impossible de créer le rapport de diagnostic.");
-        }
-    }
-
-    void IAppMenuHost.ShowAbout()
-    {
-        var text = "Arr411 Desktop " + _services.Version + "\r\n\r\n"
-            + "Radarr, Sonarr, Lidarr, qBittorrent et C411 dans une seule fenêtre.\r\n\r\n"
-            + "Licence MIT — © 2026 JoK3RZz\r\n"
-            + "https://github.com/HugoMeyer/arr411-desktop";
-        MessageBox.Show(Visible ? this : null, text, "À propos d'Arr411", MessageBoxButtons.OK, MessageBoxIcon.Information);
-    }
-
-    void IAppMenuHost.Quit() => Quit();
+    void IPageShell.Dropped(DroppedContent content) => _intake.DroppedOnPage(content);
 
     protected override void SetVisibleCore(bool value)
     {
@@ -379,24 +217,13 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         base.OnHandleCreated(e);
         NativeMethods.ColorTitleBar(Handle, Theme.Bar, Theme.Text, Theme.Accent);
         ApplyDpi();
-
-        List<LaunchRequest>? early;
-        lock (_earlyGate)
-        {
-            early = _early;
-            _early = null;
-        }
-
-        if (early is not null)
-        {
-            foreach (var request in early) BeginInvoke(() => RunRequest(request));
-        }
+        _intake.Open();
 
         if (_webStarted) return;
 
         _webStarted = true;
         _hangWatch = new HangWatch(job => BeginInvoke(job), Log.Info, message => Log.Warn(message + " | " + MemorySnapshot.Take()));
-        BeginInvoke(StartWeb);
+        BeginInvoke(_web.Start);
     }
 
     protected override void OnDpiChanged(DpiChangedEventArgs e)
@@ -455,9 +282,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     {
         _hangWatch?.Dispose();
         _toastTimer.Dispose();
-        _bridge.Dispose();
-        _pageBridge?.Dispose();
-        _engineBridge?.Dispose();
+        _web.Dispose();
         _tray.Dispose();
         _trayMenu.Dispose();
         _appMenu.Dispose();
@@ -478,28 +303,25 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     protected override void OnDragEnter(DragEventArgs drgevent)
     {
         base.OnDragEnter(drgevent);
-        _dropAccepted = ParseDrop(drgevent.Data).HasWork;
-        drgevent.Effect = _dropAccepted ? DragDropEffects.Copy : DragDropEffects.None;
+        drgevent.Effect = _intake.DragEnter(drgevent.Data);
     }
 
     protected override void OnDragOver(DragEventArgs drgevent)
     {
         base.OnDragOver(drgevent);
-        drgevent.Effect = _dropAccepted ? DragDropEffects.Copy : DragDropEffects.None;
+        drgevent.Effect = _intake.DragOver();
     }
 
     protected override void OnDragLeave(EventArgs e)
     {
         base.OnDragLeave(e);
-        _dropAccepted = false;
+        _intake.DragLeave();
     }
 
     protected override void OnDragDrop(DragEventArgs drgevent)
     {
         base.OnDragDrop(drgevent);
-        _dropAccepted = false;
-        var request = ParseDrop(drgevent.Data);
-        if (request.HasWork) Post(request);
+        _intake.Drop(drgevent.Data);
     }
 
     private static Icon? LoadIcon(Size? size)
@@ -508,8 +330,6 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         if (stream is null) return null;
         return size is { } wanted ? new Icon(stream, wanted) : new Icon(stream);
     }
-
-    private static bool IsRegistryFailure(Exception ex) => ex is IOException or UnauthorizedAccessException or SecurityException;
 
     private int Px(int dp) => (int)Math.Round(dp * DeviceDpi / 96.0);
 
@@ -559,171 +379,6 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         _services.Ui.Window = new WindowBounds(bounds.X, bounds.Y, bounds.Width, bounds.Height, maximized);
     }
 
-    private async void StartWeb()
-    {
-        try
-        {
-            await StartWebAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Error("The web view could not start", ex);
-            if (IsDisposed) return;
-
-            MessageBox.Show(Visible ? this : null, "Arr411 n'a pas pu démarrer son affichage web.\r\n\r\n" + ex.Message, "Arr411", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            Quit();
-        }
-    }
-
-    private async Task StartWebAsync()
-    {
-        _webStartedAt = Stopwatch.GetTimestamp();
-
-        // What the views are told is kept until their browser is there: a window that starts out of sight starts them out of sight.
-        UpdatePresentation();
-
-        var environment = await WebEnvironment.CreateAsync(_services.Paths);
-        if (IsDisposed) return;
-
-        var assets = new AssetStore(name => EmbeddedAssets.Open("app/" + name));
-        var router = new HostRouter(assets, _services.Covers, _bridge.BuildState);
-        await _spa.InitializeAsync(environment, router, _bridge.OnMessage, OpenExternal);
-        if (IsDisposed) return;
-
-        var engineBridge = new EngineBridge(_services.Config, _services.Http, this, _engine.PostToPage);
-        _engineBridge = engineBridge;
-        var pageBridge = new PageBridge(engineBridge, this, new WindowsUserPresence(() => Handle), _services.PageFetcher, _services.Paths.Downloads, _c411.PostToPage)
-        {
-            OffScreenGrace = PageGrace(),
-            RateWindow = PageRateWindow(),
-        };
-        _pageBridge = pageBridge;
-        var engineRouter = new EngineRouter(new AssetStore(name => EmbeddedAssets.Open("engine/" + name)), engineBridge.BuildState);
-        await _engine.InitializeAsync(environment, engineRouter, engineBridge);
-        if (IsDisposed) return;
-
-        await _c411.InitializeAsync(environment, pageBridge, OpenExternal);
-    }
-
-    private void RunRequest(LaunchRequest request)
-    {
-        if (IsDisposed) return;
-
-        try
-        {
-            if (request.Quit)
-            {
-                Quit();
-                return;
-            }
-
-            if (request.Ignored > 0) Log.Warn("Some arguments of a launch were ignored: " + request.Ignored);
-            if (!request.Background || request.HasWork) ShowWindow();
-            if (request.C411Url is { } url)
-            {
-                _c411.Navigate(url);
-                ShowTab(Tabs.C411, tellSpa: true);
-            }
-
-            if (request.Tab is { } tab) ShowTab(tab, tellSpa: true);
-            if (request.Magnets.Count > 0) _bridge.Share(SharePayload.Text(string.Join('\n', request.Magnets)));
-            if (request.TorrentFiles.Count > 0) _ = ShareFilesAsync(request.TorrentFiles);
-        }
-        catch (Exception ex)
-        {
-            Log.Error("A launch request failed", ex);
-        }
-    }
-
-    private async Task ShareFilesAsync(IReadOnlyList<string> paths)
-    {
-        try
-        {
-            var files = new List<TorrentFile>();
-            foreach (var path in paths)
-            {
-                try
-                {
-                    files.Add(await Task.Run(() => TorrentFile.Read(path)));
-                }
-                catch (TorrentFileException ex)
-                {
-                    if (!IsDisposed) ShowToast(ex.Message);
-                }
-            }
-
-            if (files.Count > 0 && !IsDisposed) _bridge.Share(SharePayload.Files(files));
-        }
-        catch (Exception ex)
-        {
-            Log.Error("Sharing torrent files failed", ex);
-        }
-    }
-
-    private LaunchRequest ParseDrop(IDataObject? data)
-    {
-        try
-        {
-            // The paths of files come from Explorer: all of them count, and none is taken for an option.
-            if (data?.GetDataPresent(DataFormats.FileDrop) == true && data.GetData(DataFormats.FileDrop) is string[] files)
-            {
-                return LaunchRequest.FromDroppedFiles(files);
-            }
-
-            if (data?.GetDataPresent(DataFormats.UnicodeText) == true && data.GetData(DataFormats.UnicodeText) is string text)
-            {
-                return LaunchRequest.FromText(text);
-            }
-        }
-        catch (Exception ex) when (ex is ExternalException or InvalidCastException or InvalidOperationException or ArgumentException or OutOfMemoryException)
-        {
-            Log.Warn("A drop could not be read: " + ex.GetType().Name);
-        }
-
-        return LaunchRequest.Empty;
-    }
-
-    // The web app reported a drop. The window does what it does for a drop on its navigation bar, except that the cursor could not refuse it:
-    // what is not usable is said here.
-    private void OnDropped(DroppedContent content)
-    {
-        if (IsDisposed) return;
-
-        try
-        {
-            if (content.Request.HasWork) RunRequest(content.Request);
-            if (content.Files.Count > 0) _bridge.Share(SharePayload.Files(content.Files));
-
-            if (content.Problems.Count > 0) ShowToast(content.Problems[0]);
-            else if (!content.HasWork) ShowToast("Rien à ajouter : dépose un lien magnet ou un fichier .torrent.");
-        }
-        catch (Exception ex)
-        {
-            Log.Error("A drop on a page failed", ex);
-        }
-    }
-
-    // The C411 page reported a drop (the user's, as far as the bridge can tell). The window hands it over as it does for the web app, but quietly:
-    // a page does not get the window to come to the front, nor the tab to change (OnDropped is for the web app, which is the app's own).
-    private void OnPageDropped(DroppedContent content)
-    {
-        if (IsDisposed) return;
-
-        try
-        {
-            if (content.Request.C411Url is { } url) _c411.Navigate(url);
-            if (content.Request.Magnets.Count > 0) _bridge.Share(SharePayload.Text(string.Join('\n', content.Request.Magnets)));
-            if (content.Files.Count > 0) _bridge.Share(SharePayload.Files(content.Files));
-
-            if (content.Problems.Count > 0) ShowToast(content.Problems[0]);
-            else if (!content.HasWork) ShowToast("Rien à ajouter : dépose un lien magnet ou un fichier .torrent.");
-        }
-        catch (Exception ex)
-        {
-            Log.Error("A drop on a page failed", ex);
-        }
-    }
-
     private void ShowWindow()
     {
         if (WindowState == FormWindowState.Minimized) NativeMethods.Restore(Handle);
@@ -737,21 +392,14 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         Close();
     }
 
-    // The views share one browser process, so each of them reports its loss. None can be revived in place: the window leaves, and the program
-    // starts again (see Program), unless the browser had only just started, which means that it would stop again at once.
-    private void OnBrowserLost(object? sender, EventArgs e)
+    // None of the views can be revived: the window leaves, and the program starts again (see Program and WebHost.BrowserLost).
+    private void OnBrowserLost(BrowserLoss loss)
     {
-        // A window that is leaving anyway has nothing to start again for.
-        if (Lost is not null || _exiting || IsDisposed) return;
-
-        var restart = BrowserRecovery.ShouldRestart(Stopwatch.GetElapsedTime(_webStartedAt), MinimumRun());
-        Lost = new BrowserLoss(restart, !Visible, _tabs.Current);
-
         // Nobody is left to ask for the cookies of the C411 tab.
         _cookiesKept = true;
 
         // Not from inside the event of a view: the views are about to be closed.
-        BeginInvoke(() => LeaveAfterLoss(restart));
+        BeginInvoke(() => LeaveAfterLoss(loss.Restart));
     }
 
     private void LeaveAfterLoss(bool restart)
@@ -776,49 +424,6 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         Quit();
     }
 
-    // How long the web views must have run for the program to start again when their browser stops: the default of BrowserRecovery, except in
-    // Debug builds, whose end-to-end tests cannot wait for it (ARR411_RESTART_GRACE, in seconds).
-    private static TimeSpan? MinimumRun()
-    {
-#if DEBUG
-        if (int.TryParse(Environment.GetEnvironmentVariable("ARR411_RESTART_GRACE"), out var seconds) && seconds >= 0) return TimeSpan.FromSeconds(seconds);
-#endif
-        return null;
-    }
-
-    // How long the C411 page is still served after its tab left the screen: the default of PageBridge, except in Debug builds, whose
-    // end-to-end tests cannot wait for it (ARR411_PAGE_GRACE, in seconds).
-    private static TimeSpan PageGrace()
-    {
-#if DEBUG
-        if (int.TryParse(Environment.GetEnvironmentVariable("ARR411_PAGE_GRACE"), out var seconds) && seconds >= 0) return TimeSpan.FromSeconds(seconds);
-#endif
-        return PageBridge.DefaultOffScreenGrace;
-    }
-
-    // How long what the C411 page does is counted for its limits: the default of PageBridge, except in Debug builds, whose end-to-end tests
-    // send in a second what a person sends in a minute (ARR411_PAGE_RATE_WINDOW, in milliseconds).
-    private static TimeSpan PageRateWindow()
-    {
-#if DEBUG
-        if (int.TryParse(Environment.GetEnvironmentVariable("ARR411_PAGE_RATE_WINDOW"), out var milliseconds) && milliseconds > 0) return TimeSpan.FromMilliseconds(milliseconds);
-#endif
-        return PageBridge.DefaultRateWindow;
-    }
-
-    private void Fail(string text)
-    {
-        ShowWindow();
-        ShowToast(text);
-    }
-
-    // The answer to something the user asked for, where the user is looking: on the window when it is on screen, else on the icon.
-    private void Tell(string text)
-    {
-        if (Visible && WindowState != FormWindowState.Minimized) ShowToast(text);
-        else _tray.Hint(text);
-    }
-
     private void ShowTrayHintOnce()
     {
         if (_services.Ui.TrayHintShown) return;
@@ -831,7 +436,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     {
         try
         {
-            var keep = _c411.KeepSessionCookiesAsync();
+            var keep = _web.C411.KeepSessionCookiesAsync();
             if (await Task.WhenAny(keep, Task.Delay(CookieWaitMilliseconds)) == keep) await keep;
         }
         catch (Exception ex)
@@ -855,14 +460,14 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         if (change.Changed)
         {
             var showSpa = name != Tabs.C411;
-            _spa.Visible = showSpa;
-            _c411.Visible = !showSpa;
-            UpdatePresentation();
-            if (!showSpa) _c411.EnsureLoaded();
+            _web.Spa.Visible = showSpa;
+            _web.C411.Visible = !showSpa;
+            _web.UpdatePresentation();
+            if (!showSpa) _web.C411.EnsureLoaded();
             if (Tabs.IsRemembered(name)) _services.Ui.LastTab = name;
         }
 
-        if (change.TellSpa) _bridge.ShowTab(name);
+        if (change.TellSpa) _web.Bridge.ShowTab(name);
     }
 
     // Gives the keyboard to the page of the tab on screen.
@@ -870,15 +475,15 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     {
         if (IsDisposed || !Visible) return;
 
-        if (_tabs.Current == Tabs.C411) _c411.FocusContent();
-        else _spa.FocusContent();
+        if (_tabs.Current == Tabs.C411) _web.C411.FocusContent();
+        else _web.Spa.FocusContent();
     }
 
     private void OnTabInvoked(string tab, bool reselected, bool byKeyboard)
     {
         if (!reselected) ShowTab(tab, tellSpa: true);
         else if (tab == Tabs.C411) ShowC411Menu(byKeyboard);
-        else _bridge.ReselectTab(tab);
+        else _web.Bridge.ReselectTab(tab);
 
         // A click moves the keyboard to the page; Enter and Space leave it on the bar, which is where the user is. The menu takes it (see ShowMenu).
         if (!byKeyboard && !(reselected && tab == Tabs.C411)) BeginInvoke(FocusContent);
@@ -887,7 +492,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     private void OnTabAlternate(string tab, bool byKeyboard)
     {
         if (tab == Tabs.C411) ShowC411Menu(byKeyboard);
-        else _bridge.Share(SharePayload.Settings(tab));
+        else _web.Bridge.Share(SharePayload.Settings(tab));
     }
 
     private void ShowC411Menu(bool byKeyboard)
@@ -952,16 +557,16 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
                     SelectByShortcut(tab);
                     break;
                 case ShortcutKind.NextTab:
-                    SelectByShortcut(Neighbour(1));
+                    SelectByShortcut(_tabs.Neighbour(1));
                     break;
                 case ShortcutKind.PreviousTab:
-                    SelectByShortcut(Neighbour(-1));
+                    SelectByShortcut(_tabs.Neighbour(-1));
                     break;
                 case ShortcutKind.Settings:
-                    _bridge.Share(SharePayload.Settings());
+                    _web.Bridge.Share(SharePayload.Settings());
                     break;
                 case ShortcutKind.Reload:
-                    if (_tabs.Current == Tabs.C411) _c411.Reload();
+                    if (_tabs.Current == Tabs.C411) _web.C411.Reload();
                     break;
                 case ShortcutKind.Back:
                     _ = GoBackAsync();
@@ -977,21 +582,9 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
     private void SelectByShortcut(string tab)
     {
         if (tab != _tabs.Current) ShowTab(tab, tellSpa: true);
-        else if (tab != Tabs.C411) _bridge.ReselectTab(tab);
+        else if (tab != Tabs.C411) _web.Bridge.ReselectTab(tab);
 
         FocusContent();
-    }
-
-    // The tab after (or before) the current one on the bar; the settings page, which has no tab, goes to the first (or the last).
-    private string Neighbour(int step)
-    {
-        var bar = Tabs.Bar;
-        for (var i = 0; i < bar.Count; i++)
-        {
-            if (bar[i] == _tabs.Current) return bar[(i + step + bar.Count) % bar.Count];
-        }
-
-        return step > 0 ? bar[0] : bar[^1];
     }
 
     private async Task GoBackAsync()
@@ -1000,11 +593,11 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         {
             if (_tabs.Current == Tabs.C411)
             {
-                _c411.GoBack();
+                _web.C411.GoBack();
                 return;
             }
 
-            var handled = await _bridge.BackAsync();
+            var handled = await _web.Bridge.BackAsync();
             if (!handled && !IsDisposed) ShowTab(_tabs.BackTarget(), tellSpa: true);
         }
         catch (Exception ex)
@@ -1018,11 +611,11 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         switch (ExternalLinks.Classify(url))
         {
             case LinkKind.C411:
-                _c411.Navigate(url);
+                _web.C411.Navigate(url);
                 ShowTab(Tabs.C411, tellSpa: true);
                 break;
             case LinkKind.Magnet:
-                _bridge.Share(SharePayload.Text(url));
+                _web.Bridge.Share(SharePayload.Text(url));
                 break;
             case LinkKind.Web:
                 ExternalBrowser.Open(url);
@@ -1039,19 +632,10 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IApp
         if (on != _foreground)
         {
             _foreground = on;
-            _bridge.SetForeground(on);
+            _web.Bridge.SetForeground(on);
         }
 
-        UpdatePresentation();
-    }
-
-    // Each page is told whether it can be seen: the one of the tab on screen, while the window is on screen. The engine always runs.
-    private void UpdatePresentation()
-    {
-        var onScreen = Visible && WindowState != FormWindowState.Minimized;
-        var c411 = _tabs.Current == Tabs.C411;
-        _spa.SetPresented(onScreen && !c411);
-        _c411.SetPresented(onScreen && c411);
+        _web.UpdatePresentation();
     }
 
     private void ShowToast(string text)

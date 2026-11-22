@@ -9,6 +9,9 @@ public static class SharePayload
     /// <summary>Text to act on: magnet links (one or several), links, a title to search.</summary>
     public static JsonObject Text(string text) => new() { ["text"] = text };
 
+    /// <summary>Magnet links, one per line, as <see cref="Text"/>.</summary>
+    public static JsonObject Magnets(IEnumerable<string> magnets) => Text(string.Join('\n', magnets));
+
     /// <summary>.torrent files to add to qBittorrent.</summary>
     public static JsonObject Files(IEnumerable<TorrentFile> files)
     {

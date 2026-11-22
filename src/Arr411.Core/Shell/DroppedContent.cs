@@ -16,6 +16,9 @@ public sealed class DroppedContent
     /// <summary>The most bytes of files one drop may carry.</summary>
     public const long MaxTotalBytes = 2L * TorrentFile.MaxBytes;
 
+    /// <summary>What a drop that carries nothing usable is answered with.</summary>
+    public const string NothingToAdd = "Rien à ajouter : dépose un lien magnet ou un fichier .torrent.";
+
     public static readonly DroppedContent Empty = new(LaunchRequest.Empty, [], []);
 
     private DroppedContent(LaunchRequest request, IReadOnlyList<TorrentFile> files, IReadOnlyList<string> problems)
@@ -36,6 +39,9 @@ public sealed class DroppedContent
 
     /// <summary>There is something to hand to the web app or to show.</summary>
     public bool HasWork => Request.HasWork || Files.Count > 0;
+
+    /// <summary>What the user is told about the drop (in French): the first thing that was refused, else that there is nothing to add. Null when all went well.</summary>
+    public string? Notice => Problems.Count > 0 ? Problems[0] : HasWork ? null : NothingToAdd;
 
     /// <param name="message">The message of the page: <c>{ t: "drop", text, files: [{ name, base64 }] }</c>, everything optional.</param>
     public static DroppedContent Parse(JsonElement message) => Parse(message, MaxTotalBytes);

@@ -71,4 +71,19 @@ public sealed class TabState
 
     /// <summary>Where "back" goes when the web app has nothing left to go back to.</summary>
     public string BackTarget() => Current == Tabs.Settings && Previous != Tabs.Settings ? Previous : Tabs.C411;
+
+    /// <summary>
+    /// The tab after (<paramref name="step"/> 1) or before (-1) the current one on the bar, going round. The settings page, which has no tab on
+    /// the bar, goes to the first (or the last).
+    /// </summary>
+    public string Neighbour(int step)
+    {
+        var bar = Tabs.Bar;
+        for (var i = 0; i < bar.Count; i++)
+        {
+            if (bar[i] == Current) return bar[(i + step + bar.Count) % bar.Count];
+        }
+
+        return step > 0 ? bar[0] : bar[^1];
+    }
 }
