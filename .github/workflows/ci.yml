@@ -7,32 +7,65 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
+# Nothing by default: each job asks for what it needs.
+permissions: {}
 
+# A new push to a pull request replaces its older run. A run of main, of a tag or of a release is never cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
     name: Build, test and package
     runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       # build.ps1 looks for arr411-android and arr411-chrome next to this repository.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: arr411-desktop
-      - uses: actions/checkout@v4
+          persist-credentials: false
+
+      # The siblings are built at the commits written in siblings.lock, so that a build can be repeated. tools/update-siblings-lock.ps1 updates the file.
+      - name: Read siblings.lock
+        id: siblings
+        working-directory: arr411-desktop
+        shell: pwsh
+        run: |
+          $sha = @{}
+          foreach ($line in Get-Content -LiteralPath siblings.lock) {
+            $line = $line.Trim()
+            if ($line -eq '' -or $line.StartsWith('#')) { continue }
+            if ($line -cmatch '^(arr411-android|arr411-chrome)=([0-9a-f]{40})$') {
+              if ($sha.ContainsKey($Matches[1])) { throw "siblings.lock lists $($Matches[1]) twice" }
+              $sha[$Matches[1]] = $Matches[2]
+            } else {
+              throw "siblings.lock: '$line' is not <repository>=<40 lowercase hexadecimal characters>"
+            }
+          }
+          foreach ($name in 'arr411-android', 'arr411-chrome') {
+            if (-not $sha.ContainsKey($name)) { throw "siblings.lock has no line for $name" }
+            "$name $($sha[$name])"
+          }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "android=$($sha['arr411-android'])`nchrome=$($sha['arr411-chrome'])`n")
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: HugoMeyer/arr411-android
+          ref: ${{ steps.siblings.outputs.android }}
           path: arr411-android
-      - uses: actions/checkout@v4
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: HugoMeyer/arr411-chrome
+          ref: ${{ steps.siblings.outputs.chrome }}
           path: arr411-chrome
+          persist-credentials: false
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: 10.0.x
 
@@ -68,21 +101,42 @@ jobs:
           [IO.File]::WriteAllText("$PWD/dist/release/SHA256SUMS.txt", "$hash  Arr411.exe`n")
           Get-Content dist/release/SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Arr411-Desktop-win-x64
           path: arr411-desktop/dist/release/*
           if-no-files-found: error
 
-  release:
-    name: Publish the release
+  # The attestation is made in its own job: the job that builds never holds the right to sign.
+  attest:
+    name: Attest the build provenance
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Arr411-Desktop-win-x64
+          path: dist/release
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/release/Arr411.exe
+
+  release:
+    name: Publish the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Arr411-Desktop-win-x64
           path: dist

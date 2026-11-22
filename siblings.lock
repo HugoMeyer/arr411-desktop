@@ -1,0 +1,4 @@
+# Commits of the sibling repositories that CI builds Arr411 Desktop against.
+# Written by tools\update-siblings-lock.ps1 at release time: do not edit by hand.
+arr411-android=a2cc226c4c362c37b4a9e885ab4ec97f8e59c209
+arr411-chrome=8022bc69b57516be939c5938fb88e45c8504cbde
