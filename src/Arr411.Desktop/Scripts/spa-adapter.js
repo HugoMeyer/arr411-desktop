@@ -34,6 +34,9 @@
     config = {};
   }
 
+  // The state of the updates, as the window last told it. It is what the web app reads, and what it is told again when it changes.
+  var updateText = isObject(state.update) ? JSON.stringify(state.update) : null;
+
   // Answers of the network calls, until the page takes them.
   var bodies = Object.create(null);
   var inFlight = Object.create(null);
@@ -113,10 +116,26 @@
     copy: function (text) {
       post({ t: 'copy', text: String(text) });
     },
+    saveText: function (name, text) {
+      post({ t: 'saveText', name: name == null ? '' : String(name), text: text == null ? '' : String(text) });
+    },
     haptic: function () {
       // No vibration on a PC.
     }
   };
+
+  // The web app hides its card of the updates when updateInfo is missing: a window that has no updater does not offer these.
+  if (updateText !== null) {
+    native.updateInfo = function () {
+      return updateText;
+    };
+    native.updateCheck = function () {
+      post({ t: 'updateCheck' });
+    };
+    native.updateInstall = function () {
+      post({ t: 'updateInstall' });
+    };
+  }
 
   var fromWindow = {
     httpDone: function (m) {
@@ -148,6 +167,11 @@
     },
     loadCfg: function () {
       app('loadCfg');
+    },
+    update: function (m) {
+      if (!isObject(m.state)) return;
+      updateText = JSON.stringify(m.state);
+      app('onUpdate', m.state);
     },
     back: function (m) {
       var handled = false;

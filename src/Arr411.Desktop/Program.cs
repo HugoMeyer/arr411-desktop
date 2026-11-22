@@ -83,6 +83,11 @@ internal static class Program
         }
 
         using var services = AppServices.Create(paths);
+
+        // A new version that is ready takes this one's place before any window exists, unless this start has something to open. The program that
+        // replaces it starts once this one is gone: the mutex is released, and the files are free.
+        if (services.Updates.TryApplyAtStart(request.HasWork, request.Background)) return Done;
+
         FollowMove(paths);
 
         // The window is closed, hence disposed, by the time Run returns.

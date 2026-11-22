@@ -26,7 +26,7 @@ Pour la désinstaller : `Arr411.exe --unregister`, puis supprime `Arr411.exe` et
 
 ### Les onglets
 
-La barre d'onglets donne accès à **C411**, **Radarr**, **Sonarr**, **Lidarr** et **qBittorrent**. Son bouton **Menu** ouvre le menu de l'application (réglages, associations, zone de notification, journaux et rapport de diagnostic, à propos, quitter).
+La barre d'onglets donne accès à **C411**, **Radarr**, **Sonarr**, **Lidarr** et **qBittorrent**. Son bouton **Menu** ouvre le menu de l'application (réglages, associations, zone de notification, journaux et rapport de diagnostic, mises à jour, à propos, quitter).
 
 - Clic droit sur un onglet de service : ses réglages.
 - Clic sur l'onglet C411 déjà affiché, ou clic droit dessus : recharger la page, accueil C411, copier le lien, réglages.
@@ -59,6 +59,17 @@ Par défaut, fermer la fenêtre la masque et Arr411 reste actif dans la zone de 
 
 Le menu permet de désactiver ce comportement (**Réduire dans la zone de notification à la fermeture**) et d'activer **Lancer avec Windows** : au démarrage de la session, Arr411 se lance sans montrer sa fenêtre (`--background`).
 
+### Mises à jour
+
+Par défaut, Arr411 se met à jour tout seul. Une demi-minute après son démarrage, puis toutes les 6 heures, il regarde si une [nouvelle version](https://github.com/HugoMeyer/arr411-desktop/releases) est publiée et la télécharge dans `%LOCALAPPDATA%\Arr411\updates`. Il en vérifie la taille et l'empreinte SHA-256 (celle que donne GitHub et celle de `SHA256SUMS.txt` : un fichier qui ne correspond pas est effacé), puis remplace `Arr411.exe` **au prochain démarrage ou quand tu quittes Arr411** (jamais à l'arrêt de Windows). Une notification t'annonce la version prête ; un clic dessus ouvre les réglages. Tes réglages ne changent pas.
+
+- **Réglage `autoUpdate`**, dans la carte des mises à jour des réglages : `auto` (par défaut) télécharge et installe tout seul, `notify` prévient sans rien télécharger, `off` ne vérifie plus. Dans tous les cas, **Rechercher** (une fois par minute au plus) et **Installer** restent possibles, dans les réglages comme dans le menu (**Rechercher des mises à jour**, **Installer la mise à jour X.Y.Z**) ; installer relance Arr411 aussitôt.
+- Le remplacement est fait par le nouveau programme lui-même (`Arr411-X.Y.Z.exe --apply-update`, réservé à ces mises à jour), une fois l'ancien arrêté. L'ancien `Arr411.exe` est gardé sous le nom `Arr411.exe.old` jusqu'au démarrage suivant, puis supprimé.
+- Une mise à jour n'est jamais appliquée au démarrage quand Arr411 est lancé pour traiter un lien magnet, un fichier `.torrent` ou un lien : elle attend que tu quittes.
+- Si le remplacement échoue (fichier verrouillé par un antivirus, par exemple), l'ancien `Arr411.exe` reste intact et Arr411 te dit pourquoi (notification et réglages). Cette version n'est plus installée toute seule, mais tu peux la réessayer à la main.
+- Le dossier d'`Arr411.exe` doit être modifiable (pas `C:\Program Files`) : sinon Arr411 annonce la version et ouvre sa page de téléchargement. Les versions d'avant cette fonction se mettent à jour à la main, une dernière fois, en remplaçant `Arr411.exe`.
+- La variable d'environnement `ARR411_UPDATE=off` coupe tout (aucune connexion à GitHub) : c'est ce que font les tests de bout en bout, et ce que tu peux faire pour un essai ou une copie portable. Une version compilée en Debug n'applique jamais rien toute seule.
+
 ## Ligne de commande
 
 ```
@@ -73,6 +84,7 @@ Arr411.exe [options] -- <un lien magnet | un fichier.torrent | un lien c411.org>
 | `--quit` | Demande à l'instance qui tourne de quitter, et attend qu'elle soit partie |
 | `--register` | Enregistre Arr411 pour les liens magnet et les fichiers `.torrent`, sans ouvrir l'application ni choisir l'application par défaut à ta place |
 | `--unregister` | Retire ces enregistrements ainsi que le lancement avec Windows, sans ouvrir l'application |
+| `--updated-from <version>` | Ajouté par une mise à jour quand elle relance Arr411 : une notification annonce « Arr411 a été mis à jour en X.Y.Z ». Ne le passe pas à la main |
 
 Une seule instance tourne à la fois : un second lancement lui passe sa demande (un lien, un fichier, un onglet) puis se termine. Les arguments inconnus ou trop nombreux (20 éléments, 64 arguments, 8 192 caractères chacun) sont ignorés, jamais exécutés. Windows place `--` avant le lien ou le fichier qu'il transmet : après lui, rien n'est pris pour une option et **seul l'argument qui suit compte**. Un guillemet dans un lien magnet coupe l'argument en deux, et le reste (qui pourrait désigner un fichier) est ignoré.
 
@@ -88,6 +100,7 @@ Tout est dans `%LOCALAPPDATA%\Arr411` (ou le dossier désigné par la variable d
 | `ui.json` | Taille et position de la fenêtre, dernier onglet (rien de sensible) |
 | `WebView2\` | Profil du navigateur : cookies et stockage de l'application et de C411 |
 | `cache\covers\` | Pochettes et affiches déjà vues |
+| `updates\` | La mise à jour téléchargée en attendant son installation (`Arr411-X.Y.Z.exe`), ce qu'Arr411 sait de la dernière vérification (`state.json`) et, si un remplacement a échoué, la raison (`last-error.txt`, lue une fois puis supprimée) |
 | `logs\arr411.log` | Journal (2 Mo au plus, plus l'ancien `arr411.log.1`) : démarrage, mémoire toutes les 15 minutes, avertissements, erreurs. Ni mot de passe ni clé API |
 | `logs\crash.log` | Le récit complet de chaque exception que personne n'a rattrapée, avec l'état de la mémoire à cet instant |
 | `logs\running.txt` | Existe tant qu'Arr411 tourne et disparaît quand il s'arrête normalement : le retrouver au lancement suivant veut dire qu'il a été arrêté de l'extérieur (processus tué, coupure de courant, plantage) ; il dit quand il était encore vivant et la mémoire qu'il occupait alors |
@@ -108,6 +121,7 @@ La page C411 est tenue pour **non fiable** : c'est un site extérieur, qui peut 
 - **Les liens qu'elle demande d'ouvrir** sont triés : une page de c411.org s'affiche dans l'onglet C411, un lien magnet ouvre la boîte d'ajout, une page web (http ou https) s'ouvre dans ton navigateur par défaut, tout le reste est refusé.
 - **Un lien magnet, un fichier ou un texte reçus** ne sont jamais exécutés : au pire, ils ouvrent la boîte d'ajout.
 - **Les instances se parlent** par un canal réservé à ton compte Windows, avec des messages bornés.
+- **Les mises à jour ne viennent que de GitHub.** Une seule adresse est interrogée (les releases de `HugoMeyer/arr411-desktop`) ; les redirections ne mènent qu'à `github.com` et aux serveurs de fichiers de GitHub, en https, 5 au plus. Le programme téléchargé (200 Mo au plus) doit avoir la taille et l'empreinte SHA-256 annoncées, sinon il est effacé, et il est vérifié une seconde fois juste avant d'être installé. Seule l'application d'Arr411 peut demander une recherche ou une installation, jamais la page C411. Le programme n'est pas signé : l'empreinte protège d'un fichier altéré ou tronqué en route, pas d'une release publiée par quelqu'un qui aurait pris la main sur le dépôt GitHub.
 - **Les clés API et le mot de passe de qBittorrent** ne sont jamais dans une adresse, un journal ou un message d'erreur, et ne quittent jamais le service auquel ils sont destinés : l'application ne suit une redirection que si elle reste sur le même serveur et le même service (le port ne change que de http vers https), jamais vers une autre machine, un autre port ou du http après du https. Les cookies de session (celui de qBittorrent, par exemple) restent propres à l'adresse et au port de leur service : un autre service installé sur la même machine ne les reçoit jamais. Les images des services sont récupérées par l'application, avec les mêmes règles. Une adresse invalide n'est jamais recopiée dans un message d'erreur, et la passkey C411 des adresses de torrent est masquée dans le journal et le rapport de diagnostic.
 - **Ce qu'une page compromise pourrait encore tenter.** Comme dans l'extension Chrome et l'appli Android, la page partage sa fenêtre JavaScript avec les scripts du pont : un script qui s'exécuterait sur c411.org même pourrait, tant que l'onglet est à l'écran, lister tes torrents et tes catégories, et, dans les 30 secondes qui suivent une action réelle de ta part sur la fenêtre, ajouter un torrent à qBittorrent, un film, une série ou un album à Radarr, Sonarr ou Lidarr, au rythme limité décrit plus haut. Il ne peut ni lire une clé API ou un mot de passe, ni viser une autre adresse que tes services, ni enregistrer autre chose que les types de fichiers cités plus haut. Une vraie isolation (monde JavaScript isolé, confirmation native de chaque ajout) serait un chantier à part.
 
@@ -164,7 +178,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Task <tâche>
 | Tâche | Effet |
 | --- | --- |
 | `build` | Compile la solution |
-| `test` | Compile et lance les tests unitaires (plus de 1 200) |
+| `test` | Compile et lance les tests unitaires (plus de 2 000) |
 | `e2e` | Lance le vrai `Arr411.exe` (build Debug) et le pilote : nécessite une session Windows ouverte et déverrouillée, et le WebView2 Runtime. **Le clavier, la souris et le premier plan sont pris pendant plusieurs minutes : ne touche à rien** |
 | `publish` | `Arr411.exe` autonome en un seul fichier, dans `dist\publish` |
 | `zip` (défaut) | `test`, `publish`, puis `dist\Arr411-Desktop-<version>-win-x64.zip` avec son empreinte SHA-256 |

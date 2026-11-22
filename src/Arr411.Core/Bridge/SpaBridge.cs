@@ -4,6 +4,7 @@ using Arr411.Core.Config;
 using Arr411.Core.Http;
 using Arr411.Core.Logging;
 using Arr411.Core.Shell;
+using Arr411.Core.Update;
 
 namespace Arr411.Core.Bridge;
 
@@ -25,6 +26,7 @@ public sealed class SpaBridge : IDisposable
     private readonly TabState _tabs;
     private readonly Action<string> _post;
     private readonly string _version;
+    private readonly IUpdateFeed? _updates;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Dictionary<string, TaskCompletionSource<bool>> _backCalls = [];
     private readonly Queue<JsonNode> _queuedShares = new();
@@ -34,7 +36,8 @@ public sealed class SpaBridge : IDisposable
     private volatile bool _disposed;
 
     /// <param name="post">Sends a JSON message to the web app. Must be callable from any thread.</param>
-    public SpaBridge(ConfigStore config, NativeHttp http, ISpaShell shell, TabState tabs, Action<string> post, string version)
+    /// <param name="updates">The state of the updates, which the web app shows and drives; null when there is none.</param>
+    public SpaBridge(ConfigStore config, NativeHttp http, ISpaShell shell, TabState tabs, Action<string> post, string version, IUpdateFeed? updates = null)
     {
         _config = config;
         _http = http;
@@ -42,7 +45,9 @@ public sealed class SpaBridge : IDisposable
         _tabs = tabs;
         _post = post;
         _version = version;
+        _updates = updates;
         _config.Changed += OnConfigChanged;
+        if (_updates is not null) _updates.StateChanged += OnUpdateChanged;
     }
 
     /// <summary>After this the bridge neither reads nor posts anything. Safe to call twice.</summary>
@@ -51,26 +56,30 @@ public sealed class SpaBridge : IDisposable
         if (_disposed) return;
         _disposed = true;
         _config.Changed -= OnConfigChanged;
+        if (_updates is not null) _updates.StateChanged -= OnUpdateChanged;
         _lifetime.Cancel();
         FailPendingCalls();
         _lifetime.Dispose();
     }
 
     /// <summary>
-    /// What the web app needs synchronously at boot (settings, tab to open on, version): it fetches it before any of its own code runs,
-    /// which also tells us that a new page was loaded.
+    /// What the web app needs synchronously at boot (settings, tab to open on, version, state of the updates): it fetches it before any of its own
+    /// code runs, which also tells us that a new page was loaded.
     /// </summary>
     public string BuildState()
     {
         Interlocked.Increment(ref _epoch);
         _tabs.OnSpaStarted();
         FailPendingCalls();
-        return JsonText.Stringify(new JsonObject
+        var state = new JsonObject
         {
             ["config"] = _config.ToJson(),
             ["tab"] = _tabs.TabForSpa(),
             ["version"] = _version,
-        });
+        };
+        if (_updates is not null) state["update"] = _updates.State.ToJson();
+
+        return JsonText.Stringify(state);
     }
 
     /// <summary>A message posted by the web app.</summary>
@@ -186,6 +195,15 @@ public sealed class SpaBridge : IDisposable
             case "copy":
                 if (JsonText.Str(message, "text") is { } text) _shell.CopyText(text);
                 break;
+            case "saveText":
+                SaveText(message);
+                break;
+            case "updateCheck":
+                _updates?.CheckNow();
+                break;
+            case "updateInstall":
+                _updates?.Install();
+                break;
             case "drop":
                 _shell.Dropped(DroppedContent.Parse(message));
                 break;
@@ -252,7 +270,23 @@ public sealed class SpaBridge : IDisposable
     {
         if (_tabs.OnSpaReady(out var tab)) ShowTab(tab);
         PostForeground();
+        if (_updates is not null) PostUpdate(_updates.State);
         while (_queuedShares.TryDequeue(out var data)) PostShared(data);
+    }
+
+    // The text was sent by a page that shows what others wrote: it is a file to offer for the user to place, never one to write on its own.
+    private void SaveText(JsonElement message)
+    {
+        if (JsonText.Str(message, "text") is not { Length: > 0 } text) return;
+
+        if (!SettingsExport.Fits(text))
+        {
+            Log.Warn($"Web app text to save refused: {text.Length} characters");
+            _shell.Toast(SettingsExport.TooBig);
+            return;
+        }
+
+        _shell.SaveText(SettingsExport.FileName(JsonText.Str(message, "name")), text);
     }
 
     private void OnReply(JsonElement message)
@@ -269,6 +303,11 @@ public sealed class SpaBridge : IDisposable
         if (e.Origin == Origin) return;
         Post(new JsonObject { ["t"] = "config", ["patch"] = JsonNode.Parse(e.PatchJson) });
     }
+
+    // Raised on whichever thread the updater works on.
+    private void OnUpdateChanged(object? sender, UpdateState state) => PostUpdate(state);
+
+    private void PostUpdate(UpdateState state) => Post(new JsonObject { ["t"] = "update", ["state"] = state.ToJson() });
 
     private void PostShared(JsonNode data) => Post(new JsonObject { ["t"] = "shared", ["data"] = data.DeepClone() });
 

@@ -1,7 +1,9 @@
+using System.Text;
 using Arr411.Core.Bridge;
 using Arr411.Core.Diagnostics;
 using Arr411.Core.Logging;
 using Arr411.Core.Shell;
+using Arr411.Core.Update;
 using Arr411.Desktop.Nav;
 
 namespace Arr411.Desktop;
@@ -38,6 +40,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IMai
     private readonly ContextMenuStrip _trayMenu;
     private readonly ContextMenuStrip _c411Menu;
     private readonly TrayIcon _tray;
+    private readonly string? _updatedFrom;
 
     private readonly Label _toast = new()
     {
@@ -59,10 +62,12 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IMai
     private bool _exiting;
     private bool _cookiesKept;
     private bool _maximized;
+    private bool _saveOpen;
 
     public MainForm(AppServices services, LaunchRequest request)
     {
         _services = services;
+        _updatedFrom = request.UpdatedFrom;
         _startHidden = request.Background;
         _foreground = !request.Background;
 
@@ -124,6 +129,8 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IMai
             ShowTab(Tabs.Qbit, tellSpa: true);
         };
         _notices = new AppNotices(this, _tray, _web.Bridge);
+        services.Updates.Notice += OnUpdateNotice;
+        services.Updates.RestartRequested += OnUpdateRestart;
 
         // The web app opens on the tab decided here: it is asked for it while it boots.
         var start = StartTab.Resolve(services.Config, services.Ui.LastTab, request.Tab);
@@ -182,6 +189,22 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IMai
 
     void ISpaShell.CopyText(string text) => TextClipboard.Copy(text);
 
+    void ISpaShell.SaveText(string fileName, string text)
+    {
+        // One dialog at a time. And not inside the message of the page: the dialog runs a loop of its own.
+        if (_saveOpen) return;
+
+        _saveOpen = true;
+        try
+        {
+            BeginInvoke(() => SaveTextAsked(fileName, text));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            _saveOpen = false;
+        }
+    }
+
     void ISpaShell.Dropped(DroppedContent content) => _intake.DroppedOnApp(content);
 
     void IEngineShell.Notify(string title, string text) => _notices.Balloon(title, text);
@@ -224,6 +247,7 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IMai
         _webStarted = true;
         _hangWatch = new HangWatch(job => BeginInvoke(job), Log.Info, message => Log.Warn(message + " | " + MemorySnapshot.Take()));
         BeginInvoke(_web.Start);
+        BeginInvoke(() => _services.Updates.Start(_updatedFrom));
     }
 
     protected override void OnDpiChanged(DpiChangedEventArgs e)
@@ -280,6 +304,13 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IMai
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        // The user left on purpose, so a new version that is ready takes this one's place, now that nothing can bring the window back.
+        // Neither when Windows ends its session (what runs then is not up to the user, and the time is short), nor when the web component stopped
+        // (the program starts again at once, see Program).
+        if (e.CloseReason is CloseReason.UserClosing or CloseReason.None && _web.Loss is null) _services.Updates.TryApplyAtExit();
+
+        _services.Updates.Notice -= OnUpdateNotice;
+        _services.Updates.RestartRequested -= OnUpdateRestart;
         _hangWatch?.Dispose();
         _toastTimer.Dispose();
         _web.Dispose();
@@ -625,6 +656,66 @@ internal sealed class MainForm : Form, ISpaShell, IEngineShell, IPageShell, IMai
                 break;
         }
     }
+
+    // The updater works on its own threads: what it says comes here. A click on the balloon leads to the settings, where the card of the update is.
+    private void OnUpdateNotice(object? sender, UpdateNotice notice) =>
+        _notices.Balloon(notice.Title, notice.Text, () => _actions.OpenSettings());
+
+    // The new version is installed once this program is gone: the updater asks for it, from its own thread.
+    private void OnUpdateRestart(object? sender, EventArgs e)
+    {
+        try
+        {
+            BeginInvoke(Quit);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            // The window is closing already.
+        }
+    }
+
+    // What the web app has to keep as a file (the export of the settings) goes where the user decides.
+    private void SaveTextAsked(string fileName, string text)
+    {
+        try
+        {
+            if (IsDisposed) return;
+
+            using var dialog = new SaveFileDialog
+            {
+                Title = "Enregistrer les réglages",
+                FileName = fileName,
+                Filter = "Fichiers JSON (*.json)|*.json",
+                DefaultExt = "json",
+                AddExtension = true,
+                OverwritePrompt = true,
+                InitialDirectory = SaveFolder(),
+            };
+            if (dialog.ShowDialog(((IMainWindow)this).DialogOwner) != DialogResult.OK) return;
+
+            File.WriteAllText(dialog.FileName, text, new UTF8Encoding(false));
+            Log.Info("A text of the web app was saved to a file");
+            ShowToast("Réglages enregistrés");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or NotSupportedException)
+        {
+            Log.Warn("A text of the web app could not be saved: " + ex.GetType().Name);
+            if (!IsDisposed) ShowToast("Impossible d’enregistrer le fichier.");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Saving a text of the web app failed", ex);
+            if (!IsDisposed) ShowToast("Impossible d’enregistrer le fichier.");
+        }
+        finally
+        {
+            _saveOpen = false;
+        }
+    }
+
+    // The Downloads folder of the user, where an export is looked for first; the Documents when there is none.
+    private string SaveFolder() =>
+        Directory.Exists(_services.Paths.Downloads) ? _services.Paths.Downloads : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 
     private void UpdateForeground()
     {

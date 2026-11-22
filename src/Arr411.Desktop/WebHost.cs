@@ -41,7 +41,7 @@ internal sealed class WebHost : IDisposable
         Spa = new SpaView { Dock = DockStyle.Fill };
         C411 = new C411View { Dock = DockStyle.Fill, Visible = false };
         Engine = new EngineView();
-        Bridge = new SpaBridge(services.Config, services.Http, spaShell, tabs, Spa.PostToPage, services.Version);
+        Bridge = new SpaBridge(services.Config, services.Http, spaShell, tabs, Spa.PostToPage, services.Version, services.Updates);
 
         Spa.BrowserLost += OnViewLost;
         C411.BrowserLost += OnViewLost;

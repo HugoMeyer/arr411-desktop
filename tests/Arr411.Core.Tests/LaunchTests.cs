@@ -235,6 +235,52 @@ public class LaunchRequestTests
     }
 
     [Theory]
+    [InlineData("--updated-from=0.2.1", "0.2.1")]
+    [InlineData("--UPDATED-FROM=v0.2.1", "0.2.1")]
+    [InlineData("--updated-from= 1.2.3.4 ", "1.2.3.4")]
+    public void The_updater_tells_which_version_it_replaced(string argument, string expected)
+    {
+        var request = Parse(argument);
+
+        Assert.Equal(expected, request.UpdatedFrom);
+        Assert.Equal(0, request.Ignored);
+        Assert.False(request.HasWork);
+    }
+
+    [Fact]
+    public void The_replaced_version_can_be_in_the_next_argument_and_asks_for_no_window()
+    {
+        var request = Parse("--background", "--updated-from", "0.2.1");
+
+        Assert.Equal("0.2.1", request.UpdatedFrom);
+        Assert.True(request.Background);
+        Assert.False(request.ShowsWindow);
+        Assert.Equal(0, request.Ignored);
+    }
+
+    [Theory]
+    [InlineData("--updated-from=latest")]
+    [InlineData("--updated-from=0.3.0-beta")]
+    [InlineData("--updated-from=1.2.3.4.5")]
+    [InlineData("--updated-from=")]
+    [InlineData("--updated-from")]
+    public void A_replaced_version_that_is_not_a_version_is_ignored(string argument)
+    {
+        var request = Parse(argument);
+
+        Assert.Null(request.UpdatedFrom);
+        Assert.Equal(1, request.Ignored);
+    }
+
+    [Fact]
+    public void Nothing_replaced_is_nothing_told()
+    {
+        Assert.Null(Parse().UpdatedFrom);
+        Assert.Null(Parse("--", "--updated-from=0.2.1").UpdatedFrom);
+        Assert.Null(LaunchRequest.Empty.UpdatedFrom);
+    }
+
+    [Theory]
     [InlineData("--tab=qbit", "qbit")]
     [InlineData("--TAB=Radarr", "radarr")]
     [InlineData("--tab= sonarr ", "sonarr")]

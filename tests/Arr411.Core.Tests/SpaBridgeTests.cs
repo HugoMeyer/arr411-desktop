@@ -6,6 +6,7 @@ using Arr411.Core.Bridge;
 using Arr411.Core.Config;
 using Arr411.Core.Http;
 using Arr411.Core.Shell;
+using Arr411.Core.Update;
 
 namespace Arr411.Core.Tests;
 
@@ -40,6 +41,8 @@ internal sealed class FakeWindow : ISpaShell
 
     public void CopyText(string text) => Add("copy:" + text);
 
+    public void SaveText(string fileName, string text) => Add("saveText:" + fileName + "|" + text);
+
     public void Dropped(DroppedContent content)
     {
         Add("dropped");
@@ -62,6 +65,45 @@ internal sealed class FakeWindow : ISpaShell
     }
 }
 
+/// <summary>An updater that records what the web app asked of it, and whose state a test changes.</summary>
+internal sealed class FakeUpdateFeed : IUpdateFeed
+{
+    private int _checks;
+    private int _installs;
+
+    public UpdateState State { get; private set; } = Sample(UpdateStatus.Idle);
+
+    public int Checks => Volatile.Read(ref _checks);
+
+    public int Installs => Volatile.Read(ref _installs);
+
+    public event EventHandler<UpdateState>? StateChanged;
+
+    public void CheckNow() => Interlocked.Increment(ref _checks);
+
+    public void Install() => Interlocked.Increment(ref _installs);
+
+    public void Change(UpdateState state)
+    {
+        State = state;
+        StateChanged?.Invoke(this, state);
+    }
+
+    public static UpdateState Sample(string status) => new(
+        Supported: true,
+        Current: "0.2.1",
+        Latest: "0.3.0",
+        Available: true,
+        Status: status,
+        Progress: null,
+        Notes: "Nouveautés : été ✓",
+        Url: "https://github.com/HugoMeyer/arr411-desktop/releases/tag/v0.3.0",
+        CheckedAt: 1730000000000,
+        CanInstall: true,
+        Error: null,
+        Mode: UpdateMode.Auto);
+}
+
 /// <summary>A bridge wired to fakes: a stub network, a throw-away settings file, a recording window and a collector for what it posts.</summary>
 internal sealed class BridgeHarness : IDisposable
 {
@@ -71,12 +113,12 @@ internal sealed class BridgeHarness : IDisposable
     private readonly NativeHttp _net;
     private readonly List<JsonObject> _posted = [];
 
-    public BridgeHarness(Func<RecordedRequest, CancellationToken, Task<HttpResponseMessage>>? network = null)
+    public BridgeHarness(Func<RecordedRequest, CancellationToken, Task<HttpResponseMessage>>? network = null, IUpdateFeed? updates = null)
     {
         Config = new ConfigStore(_dir.File("config.dat"), new ReversibleProtector());
         Network = new StubHandler(network ?? ((_, _) => Task.FromResult(StubHandler.Reply(HttpStatusCode.OK, "ok"u8.ToArray()))));
         _net = new NativeHttp("UA", Network);
-        Bridge = new SpaBridge(Config, _net, Window, State, Collect, Version);
+        Bridge = new SpaBridge(Config, _net, Window, State, Collect, Version, updates);
     }
 
     public ConfigStore Config { get; }
@@ -706,5 +748,160 @@ public sealed class SpaBridgeTests : IDisposable
     {
         _h.Bridge.Dispose();
         _h.Bridge.Dispose();
+    }
+
+    [Theory]
+    [InlineData("""{"t":"saveText","name":"arr411-reglages.json","text":"{\"a\":1}"}""", "saveText:arr411-reglages.json|{\"a\":1}")]
+    [InlineData("""{"t":"saveText","name":"sauvegarde","text":"été"}""", "saveText:sauvegarde.json|été")]
+    [InlineData("""{"t":"saveText","name":"..\\..\\Windows\\evil:name.json","text":"x"}""", "saveText:evil_name.json|x")]
+    [InlineData("""{"t":"saveText","name":"C:/Users/x/CON","text":"x"}""", "saveText:_CON.json|x")]
+    [InlineData("""{"t":"saveText","text":"x"}""", "saveText:arr411-reglages.json|x")]
+    [InlineData("""{"t":"saveText","name":5,"text":"x"}""", "saveText:arr411-reglages.json|x")]
+    public void A_text_to_save_reaches_the_window_under_a_plain_file_name(string message, string expected)
+    {
+        _h.Bridge.OnMessage(message);
+
+        Assert.Equal([expected], _h.Window.Calls);
+    }
+
+    [Theory]
+    [InlineData("""{"t":"saveText","name":"a.json"}""")]
+    [InlineData("""{"t":"saveText","name":"a.json","text":""}""")]
+    [InlineData("""{"t":"saveText","name":"a.json","text":5}""")]
+    [InlineData("""{"t":"saveText","name":"a.json","text":null}""")]
+    public void A_save_without_a_text_is_ignored(string message)
+    {
+        _h.Bridge.OnMessage(message);
+
+        Assert.Empty(_h.Window.Calls);
+    }
+
+    [Fact]
+    public void A_text_that_is_too_big_to_save_is_dropped_with_a_toast()
+    {
+        var big = new string('a', SettingsExport.MaxBytes + 1);
+
+        _h.Bridge.OnMessage(new JsonObject { ["t"] = "saveText", ["name"] = "a.json", ["text"] = big }.ToJsonString());
+
+        Assert.Equal(["toast:" + SettingsExport.TooBig], _h.Window.Calls);
+    }
+
+    [Fact]
+    public void A_text_of_exactly_the_limit_is_saved()
+    {
+        var text = new string('a', SettingsExport.MaxBytes);
+
+        _h.Bridge.OnMessage(new JsonObject { ["t"] = "saveText", ["name"] = "a.json", ["text"] = text }.ToJsonString());
+
+        Assert.Equal(["saveText:a.json|" + text], _h.Window.Calls);
+    }
+
+    [Fact]
+    public void A_text_that_is_small_in_characters_but_big_in_bytes_is_dropped()
+    {
+        // Three bytes each in UTF-8.
+        var text = new string('€', SettingsExport.MaxBytes / 3 + 1);
+
+        _h.Bridge.OnMessage(new JsonObject { ["t"] = "saveText", ["name"] = "a.json", ["text"] = text }.ToJsonString());
+
+        Assert.Equal(["toast:" + SettingsExport.TooBig], _h.Window.Calls);
+    }
+
+    [Fact]
+    public void The_boot_state_has_no_update_without_an_updater()
+    {
+        var state = JsonNode.Parse(_h.Bridge.BuildState())!.AsObject();
+
+        Assert.False(state.ContainsKey("update"));
+    }
+
+    [Fact]
+    public void The_boot_state_carries_the_state_of_the_updates_as_an_object()
+    {
+        var feed = new FakeUpdateFeed();
+        using var h = new BridgeHarness(updates: feed);
+
+        var update = JsonNode.Parse(h.Bridge.BuildState())!.AsObject()["update"]!.AsObject();
+
+        Assert.Equal(
+            ["supported", "current", "latest", "available", "status", "progress", "notes", "url", "checkedAt", "canInstall", "error", "mode"],
+            update.Select(pair => pair.Key));
+        Assert.True((bool)update["supported"]!);
+        Assert.Equal("0.2.1", (string?)update["current"]);
+        Assert.Equal("0.3.0", (string?)update["latest"]);
+        Assert.Equal("idle", (string?)update["status"]);
+        Assert.Null(update["progress"]);
+        Assert.Equal("Nouveautés : été ✓", (string?)update["notes"]);
+        Assert.Equal(1730000000000, (long?)update["checkedAt"]);
+        Assert.Null(update["error"]);
+        Assert.Equal("auto", (string?)update["mode"]);
+    }
+
+    [Fact]
+    public void The_requests_of_the_page_for_the_updates_reach_the_updater_only()
+    {
+        var feed = new FakeUpdateFeed();
+        using var h = new BridgeHarness(updates: feed);
+
+        h.Bridge.OnMessage("""{"t":"updateCheck"}""");
+        h.Bridge.OnMessage("""{"t":"updateInstall"}""");
+        h.Bridge.OnMessage("""{"t":"updateInstall"}""");
+
+        Assert.Equal(1, feed.Checks);
+        Assert.Equal(2, feed.Installs);
+        Assert.Empty(h.Window.Calls);
+        Assert.Empty(h.Posted);
+    }
+
+    [Fact]
+    public void The_requests_for_the_updates_are_ignored_without_an_updater()
+    {
+        _h.Bridge.OnMessage("""{"t":"updateCheck"}""");
+        _h.Bridge.OnMessage("""{"t":"updateInstall"}""");
+
+        Assert.Empty(_h.Window.Calls);
+        Assert.Empty(_h.Posted);
+    }
+
+    [Fact]
+    public void Every_change_of_the_update_state_is_pushed_to_the_page()
+    {
+        var feed = new FakeUpdateFeed();
+        using var h = new BridgeHarness(updates: feed);
+
+        feed.Change(FakeUpdateFeed.Sample(UpdateStatus.Downloading) with { Progress = 0.42 });
+        feed.Change(FakeUpdateFeed.Sample(UpdateStatus.Ready));
+
+        Assert.Equal(["update", "update"], h.Types);
+        var first = h.Posted[0]["state"]!.AsObject();
+        Assert.Equal("downloading", (string?)first["status"]);
+        Assert.Equal(0.42, (double?)first["progress"]);
+        Assert.Equal("ready", (string?)h.Posted[1]["state"]!["status"]);
+    }
+
+    [Fact]
+    public void A_page_that_says_it_is_ready_is_told_the_state_of_the_updates_again()
+    {
+        var feed = new FakeUpdateFeed();
+        using var h = new BridgeHarness(updates: feed);
+        feed.Change(FakeUpdateFeed.Sample(UpdateStatus.Ready));
+        h.ClearPosted();
+
+        h.Bridge.OnMessage("""{"t":"ready"}""");
+
+        var update = Assert.Single(h.Posted, p => (string?)p["t"] == "update");
+        Assert.Equal("ready", (string?)update["state"]!["status"]);
+    }
+
+    [Fact]
+    public void A_disposed_bridge_stops_following_the_updater()
+    {
+        var feed = new FakeUpdateFeed();
+        var h = new BridgeHarness(updates: feed);
+        h.Dispose();
+
+        feed.Change(FakeUpdateFeed.Sample(UpdateStatus.Ready));
+
+        Assert.Empty(h.Posted);
     }
 }

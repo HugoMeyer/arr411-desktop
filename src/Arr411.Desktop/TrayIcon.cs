@@ -22,6 +22,7 @@ internal sealed class TrayIcon : IDisposable
     private readonly NotifyIcon _icon;
     private readonly bool _quiet = IsQuiet();
     private bool _balloonIsHint;
+    private Action? _balloonAction;
 
     public TrayIcon(Icon icon, ContextMenuStrip menu)
     {
@@ -32,8 +33,9 @@ internal sealed class TrayIcon : IDisposable
         };
         _icon.BalloonTipClicked += (_, _) =>
         {
-            // The hint is about the icon itself: it leads to the window, not to the downloads.
-            if (_balloonIsHint) Opened?.Invoke(this, EventArgs.Empty);
+            // A notification may lead somewhere of its own; the hint is about the icon itself: it leads to the window, not to the downloads.
+            if (_balloonAction is { } action) action();
+            else if (_balloonIsHint) Opened?.Invoke(this, EventArgs.Empty);
             else NotificationClicked?.Invoke(this, EventArgs.Empty);
         };
     }
@@ -54,7 +56,8 @@ internal sealed class TrayIcon : IDisposable
     }
 
     /// <summary>Shows a notification. The log only learns that one was shown: the text names what the user downloads.</summary>
-    public void Notify(string title, string text)
+    /// <param name="onClick">What a click on it does; without one, it leads to the downloads (<see cref="NotificationClicked"/>).</param>
+    public void Notify(string title, string text, Action? onClick = null)
     {
         title = Clip(title, TitleMax);
         text = Clip(text, TextMax);
@@ -65,6 +68,7 @@ internal sealed class TrayIcon : IDisposable
 
         Log.Info("Notification shown");
         _balloonIsHint = false;
+        _balloonAction = onClick;
         if (!_quiet) _icon.ShowBalloonTip(10_000, title, text, ToolTipIcon.Info);
     }
 
@@ -73,6 +77,7 @@ internal sealed class TrayIcon : IDisposable
     {
         Log.Info("Tray hint shown");
         _balloonIsHint = true;
+        _balloonAction = null;
         if (!_quiet) _icon.ShowBalloonTip(10_000, Name, Clip(text, TextMax), ToolTipIcon.Info);
     }
 

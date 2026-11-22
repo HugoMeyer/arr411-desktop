@@ -5,11 +5,12 @@ using Arr411.Core.Config;
 using Arr411.Core.Diagnostics;
 using Arr411.Core.Http;
 using Arr411.Core.Logging;
+using Arr411.Core.Update;
 using Arr411.Desktop.Web;
 
 namespace Arr411.Desktop;
 
-/// <summary>Everything the window needs that is not a view: where the files are, the settings, the network client, the cover cache, and the watch over the program itself.</summary>
+/// <summary>Everything the window needs that is not a view: where the files are, the settings, the network client, the cover cache, the updater, and the watch over the program itself.</summary>
 internal sealed class AppServices : IDisposable
 {
     private readonly RunSentinel _sentinel;
@@ -24,6 +25,7 @@ internal sealed class AppServices : IDisposable
         NativeHttp http,
         ImageProxy covers,
         PageFetcher pageFetcher,
+        UpdateService updates,
         RunSentinel sentinel,
         PreviousRun? previousRun,
         DateTimeOffset started,
@@ -36,6 +38,7 @@ internal sealed class AppServices : IDisposable
         Http = http;
         Covers = covers;
         PageFetcher = pageFetcher;
+        Updates = updates;
         PreviousRun = previousRun;
         Started = started;
         WebViewVersion = webViewVersion;
@@ -62,6 +65,9 @@ internal sealed class AppServices : IDisposable
 
     /// <summary>The downloads the C411 page asks the app to make for it (the fallback of its own fetch).</summary>
     public PageFetcher PageFetcher { get; }
+
+    /// <summary>Keeps the program up to date from its GitHub releases (see <see cref="UpdateService"/>).</summary>
+    public UpdateService Updates { get; }
 
     /// <summary>How the run before this one ended, when it did not end the right way.</summary>
     public PreviousRun? PreviousRun { get; }
@@ -97,7 +103,20 @@ internal sealed class AppServices : IDisposable
         var covers = new ImageProxy(config, paths.CoverCache);
         _ = Task.Run(covers.Prune);
 
-        return new AppServices(paths, version, config, ui, http, covers, new PageFetcher(), sentinel, previous, started, webView);
+        var updates = new UpdateService(new UpdateOptions
+        {
+            Paths = paths,
+            Config = config,
+            CurrentVersion = version,
+            ExePath = ShellIntegration.ProgramPath,
+            Disabled = UpdateOptions.DisabledByEnvironment(),
+#if DEBUG
+            AutoApply = false,
+#endif
+        });
+        updates.Initialize();
+
+        return new AppServices(paths, version, config, ui, http, covers, new PageFetcher(), updates, sentinel, previous, started, webView);
     }
 
     /// <summary>
@@ -148,6 +167,7 @@ internal sealed class AppServices : IDisposable
         _memoryWatch.Dispose();
         CrashLog.Terminating -= _onCrash;
         _sentinel.End();
+        Updates.Dispose();
         PageFetcher.Dispose();
         Covers.Dispose();
         Http.Dispose();

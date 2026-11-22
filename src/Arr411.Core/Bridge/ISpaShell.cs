@@ -23,6 +23,12 @@ public interface ISpaShell
 
     void CopyText(string text);
 
+    /// <summary>
+    /// The web app has a text to keep as a file (the export of the settings): the window asks the user where. <paramref name="fileName"/> is a plain,
+    /// safe name to offer; both have been checked (<c>SettingsExport</c>). The window may show a dialog: it must not wait for it inside this call.
+    /// </summary>
+    void SaveText(string fileName, string text);
+
     /// <summary>Something was dropped on the web app: the window does what it does for a drop on its navigation bar.</summary>
     void Dropped(DroppedContent content);
 }

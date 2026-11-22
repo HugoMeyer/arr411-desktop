@@ -25,6 +25,15 @@ internal interface IAppMenuHost
     /// <summary>Puts a report of what the app knows about itself (versions, memory, last crash, end of the log) on the clipboard, to paste in a message.</summary>
     void CopyDiagnostics();
 
+    /// <summary>The version that can be installed ("0.3.0"), or null when there is none.</summary>
+    string? UpdateToInstall { get; }
+
+    /// <summary>Looks for a new version now, and shows the settings, where the answer is.</summary>
+    void CheckForUpdate();
+
+    /// <summary>Installs the new version and starts it. A copy that cannot replace itself opens the page of the release instead.</summary>
+    void InstallUpdate();
+
     void ShowAbout();
 
     void Quit();
@@ -58,6 +67,10 @@ internal static class AppMenu
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Item("Ouvrir le dossier des journaux", host.OpenLogs));
         menu.Items.Add(Item("Copier le rapport de diagnostic", host.CopyDiagnostics));
+        menu.Items.Add(Item("Rechercher des mises à jour", host.CheckForUpdate));
+        var install = Item("Installer la mise à jour", host.InstallUpdate);
+        install.Visible = false;
+        menu.Items.Add(install);
         menu.Items.Add(Item("À propos d'Arr411", host.ShowAbout));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Item("Quitter", host.Quit));
@@ -66,6 +79,10 @@ internal static class AppMenu
         {
             startup.Checked = host.StartWithWindows;
             keepRunning.Checked = host.CloseToTray;
+
+            var update = host.UpdateToInstall;
+            install.Visible = update is not null;
+            if (update is not null) install.Text = "Installer la mise à jour " + update;
         };
         return menu;
     }

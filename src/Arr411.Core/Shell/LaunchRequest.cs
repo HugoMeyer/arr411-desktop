@@ -1,3 +1,5 @@
+using Arr411.Core.Update;
+
 namespace Arr411.Core.Shell;
 
 /// <summary>
@@ -30,6 +32,12 @@ public sealed class LaunchRequest
 
     /// <summary>A tab to show (<c>--tab</c>), or null.</summary>
     public string? Tab { get; private init; }
+
+    /// <summary>
+    /// The version this one replaced (<c>--updated-from</c>, given by the updater when it starts the new version), or null. It is only told to the
+    /// user: it asks for nothing to be shown or done.
+    /// </summary>
+    public string? UpdatedFrom { get; private init; }
 
     public IReadOnlyList<string> Magnets { get; private init; }
 
@@ -102,6 +110,7 @@ public sealed class LaunchRequest
     {
         string? tab = null;
         string? c411 = null;
+        string? updatedFrom = null;
         bool background = false, quit = false, register = false, unregister = false;
         var ignored = 0;
         var magnets = new List<string>();
@@ -164,6 +173,11 @@ public sealed class LaunchRequest
                         if (Tabs.IsTab(value?.Trim().ToLowerInvariant())) tab = value!.Trim().ToLowerInvariant();
                         else ignored++;
                         break;
+                    case "--updated-from":
+                        var before = equals >= 0 ? arg[(equals + 1)..] : i + 1 < list.Count ? list[++i] : null;
+                        updatedFrom = UpdateVersion.Clean(before);
+                        if (updatedFrom is null) ignored++;
+                        break;
                     default:
                         ignored++;
                         break;
@@ -193,6 +207,7 @@ public sealed class LaunchRequest
         {
             Tab = tab,
             C411Url = c411,
+            UpdatedFrom = updatedFrom,
             Background = background,
             Quit = quit,
             Register = register,

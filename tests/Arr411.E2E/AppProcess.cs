@@ -142,6 +142,8 @@ public sealed class AppProcess : IAsyncDisposable
             ["ARR411_SOFTWARE_KEY"] = ScratchSoftwareKey(dataDir),
             // No icon in the notification area and no balloons: the tests only read the log.
             ["ARR411_QUIET"] = "1",
+            // The tests start the app from the Debug build, with a version of the repository: it must not look for another one, nor replace itself.
+            ["ARR411_UPDATE"] = "off",
             // The tests send in a second what a person sends in a minute, and the tests of a class share one app: with the real window, the
             // limits of the C411 page would run out for the tests that come last.
             ["ARR411_PAGE_RATE_WINDOW"] = "250",

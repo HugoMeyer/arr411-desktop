@@ -7,7 +7,7 @@ using Arr411.Core.Shell;
 
 namespace Arr411.Desktop;
 
-/// <summary>What the menus of the app do (see <see cref="AppMenu"/>): the settings page, the registration with Windows, the logs, the diagnostic report, the about box, quitting.</summary>
+/// <summary>What the menus of the app do (see <see cref="AppMenu"/>): the settings page, the registration with Windows, the logs, the diagnostic report, the updates, the about box, quitting.</summary>
 internal sealed class AppMenuActions : IAppMenuHost
 {
     private readonly AppServices _services;
@@ -74,6 +74,29 @@ internal sealed class AppMenuActions : IAppMenuHost
     public void OpenLogs() => OpenLogsFolder();
 
     public void CopyDiagnostics() => _ = CopyDiagnosticsAsync();
+
+    public string? UpdateToInstall => _services.Updates.State is { Available: true, Latest: { } latest } ? latest : null;
+
+    // The answer is on the card of the settings: that is where the user is taken.
+    public void CheckForUpdate()
+    {
+        OpenSettings();
+        _services.Updates.CheckNow();
+    }
+
+    public void InstallUpdate()
+    {
+        var update = _services.Updates.State;
+        if (!update.CanInstall)
+        {
+            // This copy cannot replace itself (its folder is protected, or the release has nothing to check it by): the user takes it from its page.
+            ExternalBrowser.Open(update.Url);
+            return;
+        }
+
+        OpenSettings();
+        _services.Updates.Install();
+    }
 
     public void ShowAbout()
     {
